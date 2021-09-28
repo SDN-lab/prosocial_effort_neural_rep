@@ -22,6 +22,7 @@ options(digits = 2)
 require(pacman)
 pacman::p_load(afex, # mixed models
                boot, # bootstrapping
+               coin, # used by other packages
                cowplot, # arrange plots
                # DescTools, # kendall's tau
                ggbrace, # for drawing brackets on plot
@@ -31,6 +32,7 @@ pacman::p_load(afex, # mixed models
                lme4, # mixed models
                # optimx, # faster mixed fits
                # parallel, # use multiple cores
+               magick, # image manipulation
                parameters, # format and standardise
                pracma, # for squareform function
                psych, # for statistical tests
@@ -248,7 +250,7 @@ main effects of recipient, effort, and reward (Figures 2a-b, S2 and Table S1).
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE}
 
-# Wilcoxon signed-rank test on k parameterss for self vs other 
+# Wilcoxon signed-rank test on k parameters for self vs other 
 
 wilcox.k <- wilcox.test(d$k[d$Recipient=='Other'], d$k[d$Recipient=='Self'], paired = T, conf.int = T)
 Zstat.k <- qnorm(wilcox.k$p.value/2) # get z value
@@ -353,6 +355,8 @@ null).
 
 ## plot choices
 
+if (saveplots == 1) {tiff("plotpanels/agent_by_effort_choice.tiff", units="in", width = corrplotW, height = plotH, res = resolution)}
+
 d.effort <- d.tbt %>% group_by(ID, Recipient, Effort.f) %>% summarise(chosen = mean(chosen)) # create data-frame of subject means
 
 plot.effort.choice <- ggplot(d.effort, aes(x = Effort.f, y = chosen, group = Recipient, color = Recipient, fill = Recipient)) + 
@@ -378,7 +382,11 @@ plot.effort.choice <- ggplot(d.effort, aes(x = Effort.f, y = chosen, group = Rec
 
 # plot.effort.choice
 
+if (saveplots == 1) {dev.off()}
+
 # plot choices by agent*reward
+
+if (saveplots == 1) {tiff("plotpanels/agent_by_reward_choice.tiff", units="in", width = corrplotW, height = plotH, res = resolution)}
 
 d.reward <- d.tbt %>% group_by(ID, Recipient, Reward.f) %>% summarise(chosen = mean(chosen)) # create data-frame of subject means
 
@@ -404,6 +412,8 @@ plot.reward.choice <- ggplot(d.reward, aes(x = Reward.f, y = chosen, group = Rec
         legend.key.size = unit(20,'pt')) 
 
 # plot.reward.choice
+
+if (saveplots == 1) {dev.off()}
 
 ```
 
@@ -478,6 +488,7 @@ win.mod <- ggplot(win.mod.text) +
 ## plot parameter recovery
 
 df.pr <- read_csv("data/Parameter_recovery_mle.csv", col_names = T)
+if (saveplots == 1) {tiff("plotpanels/Parameter_recovery.tiff", units="in", res = resolution, width = modplotW, height = plotH)}
 
 h.plot <- ggplot(data = df.pr, aes(x=Simulated, y=Recovered, fill=MLCorr)) + 
   geom_tile() +
@@ -505,10 +516,13 @@ h.plot <- ggplot(data = df.pr, aes(x=Simulated, y=Recovered, fill=MLCorr)) +
 
 # h.plot
 
+if (saveplots == 1) {dev.off()}
 
 ## plot model identifiability
 
-df.mi <- read_csv("data/Model_identifiability_mle_vba.csv", col_names = T)
+df.mi <- read_csv("data/Model_identifiability_mle.csv", col_names = T)
+
+if (saveplots == 1) {tiff("plotpanels/Model_iden_bicp.tiff", units="in", res = resolution, width = modplotW, height = plotH)}
 
 bicp.plot <- ggplot(data = df.mi, aes(x=Simulated, y=Estimated, fill=bicp)) + 
   geom_tile() +
@@ -531,6 +545,10 @@ bicp.plot <- ggplot(data = df.mi, aes(x=Simulated, y=Estimated, fill=bicp)) +
 
 # bicp.plot
 
+if (saveplots == 1) {dev.off()}
+
+if (saveplots == 1) {tiff("plotpanels/Model_iden_best.tiff", units="in", res = resolution, width = modplotW, height = plotH)}
+
 bm.plot <- ggplot(data = df.mi, aes(x=Simulated, y=Estimated, fill=best)) + 
   geom_tile() +
   scale_fill_distiller(palette = "Purples", direction = 1,
@@ -550,6 +568,8 @@ bm.plot <- ggplot(data = df.mi, aes(x=Simulated, y=Estimated, fill=best)) +
         legend.text = element_text(size = axtext))
 
 # bm.plot
+
+if (saveplots == 1) {dev.off()}
 
 ```
 
@@ -601,6 +621,8 @@ plot.k <- ggplot(d, aes(x = Recipient, y = k, fill = Recipient,
     comparisons = list(c("Other", "Self")),
     map_signif_level = TRUE, test = "wilcox.test", colour = "black", tip_length = 0)
 
+if (saveplots == 1) {tiff('plotpanels/k_param.tiff', units="in", width = plotW, height = plotH, res = resolution)}
+
 plot.k.save <- plot.k +
   annotation_custom(grob = textGrob("← More motivated", x=-0.75,  y=0.2, rot = 90,
                                     gp=gpar(fontsize=(axtext-4), fontface="italic"))) +
@@ -610,6 +632,8 @@ plot.k.save <- plot.k +
   theme(plot.margin = unit(c(0, 0, 0, 1.5), "cm"))
 
 # plot.k.save
+
+if (saveplots == 1) {dev.off()}
 
 k.lab <- ggplot() +
     geom_textbox(mapping = aes(0.85, 0.25, 
@@ -637,6 +661,8 @@ plot.k <- plot_grid(k.lab, plot.k, NULL, ncol = 3)
 
 ## plot force
 
+if (saveplots == 1) {tiff("plotpanels/agent_by_effort_force.tiff", units="in", width = corrplotW, height = plotH, res = resolution)}
+
 d.effort <- d.tbt.f %>% group_by(ID, Recipient, Effort.r) %>% summarise(Force_norm = mean(Force_norm)) # create data-frame of subject means
 
 plot.effort.force <- ggplot(d.tbt.f, aes(x = Effort.r, y = Force_norm, group = Recipient, color = Recipient, fill = Recipient, linetype = Recipient)) + 
@@ -660,7 +686,11 @@ plot.effort.force <- ggplot(d.tbt.f, aes(x = Effort.r, y = Force_norm, group = R
 
 # plot.effort.force
 
+if (saveplots == 1) {dev.off()}
+
 # plot force-production by agent*reward
+
+if (saveplots == 1) {tiff("plotpanels/agent_by_reward_force.tiff", units="in", width = corrplotW, height = plotH, res = resolution)}
 
 d.reward <- d.tbt.f %>% group_by(ID, Recipient, Reward.r) %>% summarise(Force_norm = mean(Force_norm)) # create data-frame of subject means
 
@@ -684,6 +714,8 @@ plot.reward.force <- ggplot(d.tbt.f, aes(x = Reward.r, y = Force_norm, group = R
   guides(linetype = guide_legend(override.aes = list(size = 2))) 
 
 # plot.reward.force
+
+if (saveplots == 1) {dev.off()}
 
 ```
 
@@ -1254,6 +1286,8 @@ for (p in 1:nrow(toplot)){
   
   d.rsa.plot <- d.rsa %>% filter(Measure == measure & Area == area) %>% droplevels()
   
+  if (saveplots == 1) {tiff(paste0('plotpanels/RSA_',measure,'_',area,'.tiff'), units="in", width = plotW, height = plotH, res = resolution)}
+  
   plot.rsa <- ggplot(d.rsa.plot, aes(x = Recipient, y = value, fill = Recipient, 
                                      color = Recipient)) + 
     stat_summary(fun = mean, size = 0.5, geom = 'bar', alpha = 0.8, colour = 'black',
@@ -1297,6 +1331,7 @@ for (p in 1:nrow(toplot)){
   
   assign(plot.name, plot.rsa)
   
+  if (saveplots == 1) {dev.off()}
 }
 
 ```
@@ -1343,6 +1378,8 @@ for (p in 1:length(toplot.univ)){
   
   stars.plot.univ <- data.frame(Recipient = c("Other", "Self"), value = c(heights[p], heights[p]), label = c(star.other, star.self))
   
+  if (saveplots == 1) {tiff(paste0('plotpanels/Univariate_',univ,'.tiff'), units="in", width = plotW, height = plotH, res = resolution)}
+  
   plot.univ <- ggplot(d2, aes(x = Recipient, y = value, fill = Recipient, 
                               color = Recipient, group = Recipient)) +
     stat_summary(fun.y = mean, size = 0.5, geom = 'bar', alpha = 0.8, colour = 'black',
@@ -1382,6 +1419,8 @@ for (p in 1:length(toplot.univ)){
   plot.name <- paste0("plot.",univ)
   
   assign(plot.name, plot.univ)
+  
+  if (saveplots == 1) {dev.off()}
   
 }
 
@@ -1438,11 +1477,13 @@ all
 
 ## QCAE scatterplot
 
+if (saveplots == 1) {tiff("plotpanels/other_ACCg_effort_QCAE_AE.tiff", units="in", width = plotW*1.5, height = plotH, res = resolution)}
+
 plot.qcae.ae <- ggplot(d.wide, aes(x = other_ACCg_eff_RSA, y = QCAE_AE)) + 
   geom_point(alpha = 0.7, size = 5, show.legend = FALSE, colour = "#326199") + 
   geom_smooth(method = 'lm', alpha = 0.3, size = 2, colour = "#326199", fill = "#326199", show.legend = FALSE) + 
   geom_smooth(method = 'lm', alpha = 0, size = 2, colour = "#326199") +
-  scale_x_continuous(n.breaks = 4, name = paste0(taulabel)) +
+  scale_x_continuous(n.breaks = 6, name = paste0(taulabel), limits = c(-0.05, 0.15)) +
   scale_y_continuous(name = "QCAE<br>
         <span style='font-size:12pt'>(Affective empathy subscale)</span>") + 
   ggtitle("ACCg pattern and\naffective empathy") +
@@ -1453,12 +1494,15 @@ plot.qcae.ae <- ggplot(d.wide, aes(x = other_ACCg_eff_RSA, y = QCAE_AE)) +
         axis.title.y = element_markdown(size = axtitle),
         plot.title = element_text(size = axtitle, hjust = 0.5)) +
   guides(shape = guide_legend(override.aes = list(size = 2))) +
-  annotate(geom='richtext', x = 0.08, y = 10,
-           label = paste0("_r_","(", (length(!is.na(d.wide$QCAE_AE))-2),")=", format(round(o.accg.ae.corr[["estimate"]][["cor"]],digits=2), nsmall=2),", _p_", 
+  annotate(geom='richtext', x = 0.08, y = 24.7, 
+           label = paste0("_r_","<sub>(", (length(!is.na(d.wide$QCAE_AE))-2),")</sub>=", 
+                          format(round(o.accg.ae.corr[["estimate"]][["cor"]],digits=2), nsmall=2),", _p_", 
                           pvalr(o.accg.ae.corr[["p.value"]])),
-           fill = NA, label.color = NA)
+           fill = NA, label.color = NA, size = 6)
 
 # plot.qcae.ae
+
+if (saveplots == 1) {dev.off()}
 
 ```
 
@@ -1480,11 +1524,11 @@ ACCg.force.brain <- ggdraw() + draw_image(ACCg.force.brain)
 force.task <- "../Figures_PM/Force_task.jpg"
 force.task <- ggdraw() + draw_image(force.task)
 
-ACCg.roi.effort.rdm <- plot_grid(ACCg.roi.brain, NULL, effort.rdm, nrow = 3, rel_heights = c(3,0.5,1.5))
+ACCg.roi.effort.rdm <- plot_grid(ACCg.roi.brain, NULL, effort.rdm, nrow = 3, rel_heights = c(3,0.5,2.3))
 
 other.self.effort <- plot_grid(plot.Effort.ACCg, plot.qcae.ae, ncol = 2, rel_widths = c(0.9,1.4), align = "h")
 
-ACCg.force.task <- plot_grid(ACCg.force.brain, NULL, force.task, nrow = 3, rel_heights = c(3,0.5,1.5))
+ACCg.force.task <- plot_grid(ACCg.force.brain, NULL, force.task, nrow = 3, rel_heights = c(3,0.5,2.3))
 
 f3a.title <- ggdraw() + 
   draw_label(
@@ -1675,6 +1719,8 @@ if (saveplots == 1) {dev.off()}
 
 ```
 
+**Figure S3. Model identifiability.** Data simulated from each of the 12 models for 100 participants shows that the model comparison procedure identifies the model that simulated the data, demonstrated by the strong diagonal. **(a)** We repeated the simulations and fittings ten times and quantified the winning model as with the modelling of participants’ data as the model with the lowest Bayesian Information Criterion (BIC), summing the number of times that model won across the ten runs. **(b)** We also calculated the percentage of simulated participants for which each model had the best fit to the data and averaged this over the ten runs.
+
 ### Table S1
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE}
@@ -1685,7 +1731,7 @@ r.choice <- r.choice %>%
 
 kable(r.choice,
       align = c('l',rep('c',6)),
-      caption = "Generalised linear mixed model for choice performance") %>% kable_styling()
+      caption = "Generalised linear mixed-effects model predicting choices") %>% kable_styling()
 
 if (savecsvs == 1) {write.table(r.choice, file = "output/Table_S1.csv", sep = ",", row.names = F)}
 
@@ -1701,7 +1747,7 @@ r.force <- r.force %>%
 
 kable(r.force,
       align = c('l',rep('c',3)),
-      caption = "Linear mixed model for normalised force") %>% kable_styling()
+      caption = "Linear mixed-effects model predicting normalised force") %>% kable_styling()
 
 if (savecsvs == 1) {write.table(r.force, file = "output/Table_S2.csv", sep = ",", row.names = F)}
 
@@ -1720,7 +1766,9 @@ p.kend.f <- p.kend %>%
   mutate(pvalFDR = pvalr(pvalFDR)) %>% 
   mutate(pvalFDR = str_replace(pvalFDR, pattern = "=", replacement = ""))
 
-kable(p.kend.f) %>% kable_styling()
+kable(p.kend.f,
+      align = c(rep('l',3),rep('c',4)),
+      caption = paste0(taulabel, " correlations between brain RDMs and model RDMs")) %>% kable_styling()
 
 if (savecsvs == 1) {write.table(p.kend.f, file = "output/Table_S3.csv", sep = ",", row.names = F)}
 
