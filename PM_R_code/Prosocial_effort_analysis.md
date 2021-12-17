@@ -54,7 +54,7 @@ median=0.07,
 Wilcoxon two-sided signed rank test Z=-5.34, 
 effect size *r*=0.50,
 [0.31,
-0.66],
+0.65],
 *p*<0.001, Figure 2f).
 
 ## Analyse force data
@@ -79,7 +79,7 @@ and other trials
 Wilcoxon two-sided signed rank test Z=-0.59, 
 effect size *r*=0.04,
 [0.00,
-0.27],
+0.26],
 *p*=0.55) and Bayesian evidence for no
 difference (BF<sub>01</sub>=4.35, substantial evidence in support of the
 null).
@@ -142,7 +142,7 @@ compared to prosocial choices (Wilcoxon two-sided signed rank test
 Z=-5.34,
 *r*<sub>(38)</sub>=0.50,
 [0.31,
-0.66],
+0.65],
 *p*<0.001). 
 Data are represented as median ± SE, *** shows p<0.001 in Wilcoxon two-sided signed rank test. 
 **(G)** Force exerted (normalised areas under the curve during the effort period) for

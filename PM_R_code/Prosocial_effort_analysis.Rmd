@@ -394,7 +394,11 @@ null).
 
 # if (saveplots == 1) {tiff("plotpanels/agent_by_effort_choice.tiff", units="in", width = corrplotW, height = plotH, res = resolution)}
 
-d.effort <- d.tbt %>% group_by(ID, Recipient, Effort.f) %>% summarise(chosen = mean(chosen)) # create data-frame of subject means
+d.effort <- d.tbt %>% 
+  group_by(ID, Recipient, Effort.f) %>% 
+  summarise(chosen = mean(chosen)) %>% 
+  mutate(Recipient = factor(Recipient, 
+                            levels = c('Other', 'Self'))) # create data-frame of subject means
 
 plot.effort.choice <- ggplot(d.effort, aes(x = Effort.f, y = chosen, group = Recipient, color = Recipient, fill = Recipient)) + 
   stat_summary(fun = mean, size = 0.5, geom = 'bar', alpha = 0.8, colour = 'black',
@@ -409,7 +413,6 @@ plot.effort.choice <- ggplot(d.effort, aes(x = Effort.f, y = chosen, group = Rec
   theme_classic() + 
   scale_fill_manual(values = otherselfcols) + 
   scale_color_manual(values = otherselfdots) + 
-  theme(axis.text=element_text(size = 11), axis.title=element_text(size = 13)) + 
   theme(legend.title = element_blank(),
         legend.text = element_text(size = axtext, margin = margin(t = 2, b = 2, unit = 'pt')),
         axis.text.y=element_text(size = axtext),
@@ -425,7 +428,11 @@ plot.effort.choice <- ggplot(d.effort, aes(x = Effort.f, y = chosen, group = Rec
 
 # if (saveplots == 1) {tiff("plotpanels/agent_by_reward_choice.tiff", units="in", width = corrplotW, height = plotH, res = resolution)}
 
-d.reward <- d.tbt %>% group_by(ID, Recipient, Reward.f) %>% summarise(chosen = mean(chosen)) # create data-frame of subject means
+d.reward <- d.tbt %>% 
+  group_by(ID, Recipient, Reward.f) %>% 
+  summarise(chosen = mean(chosen)) %>% 
+  mutate(Recipient = factor(Recipient, 
+                            levels = c('Other', 'Self'))) # create data-frame of subject means
 
 plot.reward.choice <- ggplot(d.reward, aes(x = Reward.f, y = chosen, group = Recipient, color = Recipient, fill = Recipient)) + 
   stat_summary(fun = mean, size = 0.5, geom = 'bar', alpha = 0.8, colour = 'black',
@@ -440,7 +447,6 @@ plot.reward.choice <- ggplot(d.reward, aes(x = Reward.f, y = chosen, group = Rec
   theme_classic() + 
   scale_fill_manual(values = otherselfcols) + 
   scale_color_manual(values = otherselfdots) + 
-  theme(axis.text=element_text(size = 11), axis.title=element_text(size = 13)) + 
   theme(legend.title = element_blank(),
         legend.text = element_text(size = axtext, margin = margin(t = 2, b = 2, unit = 'pt')),
         axis.text.y=element_text(size = axtext),
@@ -700,7 +706,11 @@ plot.k <- plot_grid(k.lab, plot.k, NULL, ncol = 3)
 
 # if (saveplots == 1) {tiff("plotpanels/agent_by_effort_force.tiff", units="in", width = corrplotW, height = plotH, res = resolution)}
 
-d.effort <- d.tbt.f %>% group_by(ID, Recipient, Effort.r) %>% summarise(Force_norm = mean(Force_norm)) # create data-frame of subject means
+d.effort <- d.tbt.f %>% 
+  group_by(ID, Recipient, Effort.r) %>% 
+  summarise(Force_norm = mean(Force_norm)) %>% 
+  mutate(Recipient = factor(Recipient, 
+                            levels = c('Other', 'Self'))) # create data-frame of subject means
 
 plot.effort.force <- ggplot(d.tbt.f, aes(x = Effort.r, y = Force_norm, group = Recipient, color = Recipient, fill = Recipient, linetype = Recipient)) + 
   geom_jitter(data = d.effort, position = position_jitterdodge(dodge.width = 0.35, jitter.height = 0, jitter.width = 0.1),
@@ -713,7 +723,6 @@ plot.effort.force <- ggplot(d.tbt.f, aes(x = Effort.r, y = Force_norm, group = R
   theme_classic() + 
   scale_color_manual(values = otherselfcols) + 
   scale_fill_manual(values = otherselfdots) +
-  theme(axis.text=element_text(size = 11), axis.title=element_text(size = 13)) + 
   theme(legend.title = element_blank(),
         axis.text=element_text(size = axtext), 
         axis.title.x=element_text(size = axtitle),
@@ -729,7 +738,11 @@ plot.effort.force <- ggplot(d.tbt.f, aes(x = Effort.r, y = Force_norm, group = R
 
 # if (saveplots == 1) {tiff("plotpanels/agent_by_reward_force.tiff", units="in", width = corrplotW, height = plotH, res = resolution)}
 
-d.reward <- d.tbt.f %>% group_by(ID, Recipient, Reward.r) %>% summarise(Force_norm = mean(Force_norm)) # create data-frame of subject means
+d.reward <- d.tbt.f %>% 
+  group_by(ID, Recipient, Reward.r) %>% 
+  summarise(Force_norm = mean(Force_norm)) %>% 
+  mutate(Recipient = factor(Recipient, 
+                            levels = c('Other', 'Self'))) # create data-frame of subject means
 
 plot.reward.force <- ggplot(d.tbt.f, aes(x = Reward.r, y = Force_norm, group = Recipient, color = Recipient, fill = Recipient, linetype = Recipient)) + 
   geom_jitter(data = d.reward, position = position_jitterdodge(dodge.width = 0.35, jitter.height = 0, jitter.width = 0.1),
@@ -742,7 +755,6 @@ plot.reward.force <- ggplot(d.tbt.f, aes(x = Reward.r, y = Force_norm, group = R
   theme_classic() + 
   scale_color_manual(values = otherselfcols) +
   scale_fill_manual(values = otherselfdots) +
-  theme(axis.text=element_text(size = 11), axis.title=element_text(size = 13)) + 
   theme(legend.title = element_blank(),
         axis.text=element_text(size = axtext), 
         axis.title.x=element_text(size = axtitle),
