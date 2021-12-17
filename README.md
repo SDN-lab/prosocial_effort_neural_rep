@@ -8,8 +8,7 @@
 
 ### For analysis of the real participant data (i & iii):
 
-#### Step 0 (if data not already in MATLAB structure) - Prosocial_learning_behav_analysis.m
-Script to convert data to the required format from Presentation .log / .csv / .xlsx formats
+#### Step 0 (if data not already in MATLAB structure) - Convert data to the required format from Presentation .log / .csv / .xlsx formats
 
 #### Step 1 - Run_mle_model.m 
 Script to run and compare models using maximum likelihood estimation fit
