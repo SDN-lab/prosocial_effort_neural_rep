@@ -8,8 +8,20 @@ if contains(modelID, 'one_k')
 elseif contains(modelID, 'two_k')
     params{1} = 'self_k';
     params{2} = 'other_k';
+elseif ~contains(modelID, 'k')
+    params = {};
 else
     error(['Cant`t determine number of k parameters from model name: ', model])
+end
+
+if contains(modelID, 'one_rew')
+    params{end+1} = 'rew';
+elseif contains(modelID, 'two_rew')
+    params{end+1} = 'self_rew';
+    params{end+1} = 'other_rew';
+elseif ~contains(modelID, 'rew')
+else
+    error(['Cant`t determine number of rew parameters from model name: ', model])
 end
 
 if contains(modelID, 'one_beta')

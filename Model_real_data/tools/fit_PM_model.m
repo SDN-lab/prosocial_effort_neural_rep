@@ -1,22 +1,15 @@
-function [modelresults] = fit_PM_model(data, modelID)
+function [modelresults] = fit_PM_model(data, modelID, kbounds, rewbounds, betabounds, iteration)
 
 % INPUT:     - data
 %           - sample
 %           - modelID: string identifying which model to run
 % OUPUT:    - modelresults: fitted model including parameter values, fval, etc.
 
-
 % some optional settings for fminsearch
 max_evals       = 1000000;
-options         = optimset('MaxIter', max_evals,'MaxFunEvals', max_evals*100, 'Display', 'none');
-%
-
-num_trials    = 150; % how many trials in total
-num_conds     = 2; % number of conditions: 1=self and 2=other
-stim_props = [num_trials;num_conds];
+options         = optimset('MaxIter', max_evals,'MaxFunEvals', max_evals*100, 'Display', 'off');
 
 modelresults={};
-
 
 %% Loop through subjects.
 for j = 1:length(data.PM.ID) % j indexs which subject it is, and each subjects data is stored in cell in the structure
@@ -41,7 +34,9 @@ for j = 1:length(data.PM.ID) % j indexs which subject it is, and each subjects d
             effort(i)=NaN;
             agent(i)=NaN;
             
-        else chosen(i)=chosen(i);
+        else
+            
+            chosen(i)=chosen(i);
             reward(i) =reward(i);
             effort(i) =effort(i);
             agent(i)  =agent(i);
@@ -55,264 +50,81 @@ for j = 1:length(data.PM.ID) % j indexs which subject it is, and each subjects d
     effort = effort(~isnan(effort));
     agent  = agent(~isnan(agent));
     
-    if strcmp(modelID, 'one_k_one_beta'),  % compares the string for the model you are calling, e.g. this will run the model fitting for the one discount one beta model
-        
-        %%%constrain parameters:
-        
-        lb = [0 0];   %lower bounds on parameters
-        ub = [1.5 100]; %upper bounds on parameters
-        
-        %%% I.) first fit the model:
-        outtype=1;
-        Parameter=[.1 .1];  % starting values for each parameter                                                                                                                          % the starting values of the free parameters
-        [out.x, out.fval, exitflag] = fmincon(@one_k_one_beta, Parameter,[],[],[],[],lb,ub,[],options,chosen,effort,reward,agent,stim_props,outtype); 
-        out.xnames={'discount';'beta';};             % the names of the free parameters
-        out.modelID=modelID;
-        %%% II.) Get modeled schedule:
-        outtype=2;
-        Parameter=out.x;
-        modelout = out;
-        modelout=one_k_one_beta(Parameter,chosen,effort,reward,agent,stim_props,outtype);
-        %%% III.) Now save:
-        modelresults{j}=out;
-        modelresults{j}.info=modelout;
-        
-        
-    elseif strcmp(modelID, 'two_k_one_beta'),
-        
-        %%%constrain parameters:
-        
-        lb = [0 0 0];   %lower bounds on parameters
-        ub = [1.5 1.5 100]; %upper bounds on parameters
-        
-        %%% I.) first fit the model:
-        outtype=1;
-        Parameter=[.1 .1 .1 ];                                                                                                                            % the starting values of the free parameters
-        [out.x, out.fval, exitflag] = fmincon(@two_k_one_beta, Parameter,[],[],[],[],lb,ub,[],options,chosen,effort,reward,agent,stim_props,outtype); 
-        out.xnames={'k_self'; 'k_other'; 'beta'};             % the names of the free parameters
-        out.modelID=modelID;
-        %%% II.) Get modeled schedule:
-        outtype=2;
-        Parameter=out.x;
-        modelout=two_k_one_beta(Parameter,chosen,effort,reward,agent,stim_props,outtype);
-        %%% III.) Now save:
-        modelresults{j}=out;
-        modelresults{j}.info=modelout;
-        
-    elseif strcmp(modelID, 'two_k_two_beta'),
-        
-        %%%constrain parameters:
-        
-        lb = [0 0 0 0];   %lower bounds on parameters
-        ub = [1.5 1.5 100 100]; %upper bounds on parameters
-        
-        %%% I.) first fit the model:
-        outtype=1;
-        Parameter=[.1 .1 .1 .1];                                                                                                                            % the starting values of the free parameters
-        [out.x, out.fval, exitflag] = fmincon(@two_k_two_beta, Parameter,[],[],[],[],lb,ub,[],options,chosen,effort,reward,agent,stim_props,outtype); 
-        out.xnames={'k_self'; 'k_other'; 'beta_self'; 'beta_other'};             % the names of the free parameters
-        out.modelID=modelID;
-        %%% II.) Get modeled schedule:
-        outtype=2;
-        Parameter=out.x;
-        modelout=two_k_two_beta(Parameter,chosen,effort,reward,agent,stim_props,outtype);
-        %%% III.) Now save:
-        modelresults{j}=out;
-        modelresults{j}.info=modelout;
-        
-    elseif strcmp(modelID, 'one_k_two_beta'),
-        
-        %%%constrain parameters:
-        
-        lb = [0 0 0];   %lower bounds on parameters
-        ub = [1.5 100 100]; %upper bounds on parameters
-        %%% I.) first fit the model:
-        outtype=1;
-        Parameter=[.1 .1 .1 ];                                                                                                                            % the starting values of the free parameters
-        [out.x, out.fval, exitflag] = fmincon(@one_k_two_beta, Parameter,[],[],[],[],lb,ub,[],options,chosen,effort,reward,agent,stim_props,outtype); 
-        out.xnames={'k'; 'beta_self'; 'beta_other'};             % the names of the free parameters
-        out.modelID=modelID;
-        %%% II.) Get modeled schedule:
-        outtype=2;
-        Parameter=out.x;
-        modelout=one_k_two_beta(Parameter,chosen,effort,reward,agent,stim_props,outtype);
-        %%% III.) Now save:
-        modelresults{j}=out;
-        modelresults{j}.info=modelout;
-        
-    elseif strcmp(modelID, 'one_k_one_beta_linear'),
-        
-        %%%constrain parameters:
-        
-        lb = [0 0];   %lower bounds on parameters
-        ub = [1.5 100]; %upper bounds on parameters
-        
-        %%% I.) first fit the model:
-        outtype=1;
-        Parameter=[.1 .1 ];                                                                                                                            % the starting values of the free parameters
-        [out.x, out.fval, exitflag] = fmincon(@one_k_one_beta_linear, Parameter,[],[],[],[],lb,ub,[],options,chosen,effort,reward,agent,stim_props,outtype); 
-        out.xnames={'k'; 'beta'};             % the names of the free parameters
-        out.modelID=modelID;
-        %%% II.) Get modeled schedule:
-        outtype=2;
-        Parameter=out.x;
-        modelout=one_k_one_beta_linear(Parameter,chosen,effort,reward,agent,stim_props,outtype);
-        %%% III.) Now save:
-        modelresults{j}=out;
-        modelresults{j}.info=modelout;
-        
-    elseif strcmp(modelID, 'two_k_one_beta_linear'),
-        
-        %%%constrain parameters:
-        
-        lb = [0 0 0];   %lower bounds on parameters
-        ub = [1.5 1.5 100]; %upper bounds on parameters
-        
-        %%% I.) first fit the model:
-        outtype=1;
-        Parameter=[.1 .1 .1 ];                                                                                                                            % the starting values of the free parameters
-        [out.x, out.fval, exitflag] = fmincon(@two_k_one_beta_linear, Parameter,[],[],[],[],lb,ub,[],options,chosen,effort,reward,agent,stim_props,outtype); 
-        out.xnames={'k_self'; 'k_other'; 'beta'};             % the names of the free parameters
-        out.modelID=modelID;
-        %%% II.) Get modeled schedule:
-        outtype=2;
-        Parameter=out.x;
-        modelout=two_k_one_beta_linear(Parameter,chosen,effort,reward,agent,stim_props,outtype);
-        %%% III.) Now save:
-        modelresults{j}=out;
-        modelresults{j}.info=modelout;
-        
-    elseif strcmp(modelID, 'two_k_two_beta_linear'),
-        
-        %%%constrain parameters:
-        
-        lb = [0 0 0 0];   %lower bounds on parameters
-        ub = [1.5 1.5 100 100]; %upper bounds on parameters
-        
-        %%% I.) first fit the model:
-        outtype=1;
-        Parameter=[.1 .1 .1 .1 ];                                                                                                                            % the starting values of the free parameters
-        [out.x, out.fval, exitflag] = fmincon(@two_k_two_beta_linear, Parameter,[],[],[],[],lb,ub,[],options,chosen,effort,reward,agent,stim_props,outtype); 
-        out.xnames={'k_self'; 'k_other'; 'beta_self'; 'beta_other'};             % the names of the free parameters
-        out.modelID=modelID;
-        %%% II.) Get modeled schedule:
-        outtype=2;
-        Parameter=out.x;
-        modelout=two_k_two_beta_linear(Parameter,chosen,effort,reward,agent,stim_props,outtype);
-        %%% III.) Now save:
-        modelresults{j}=out;
-        modelresults{j}.info=modelout;
-        
-    elseif strcmp(modelID, 'one_k_two_beta_linear'),
-        
-        %%%constrain parameters:
-        
-        lb = [0 0 0];   %lower bounds on parameters
-        ub = [1.5 100 100]; %upper bounds on parameters
-        
-        %%% I.) first fit the model:
-        outtype=1;
-        Parameter=[.1 .1 .1 ];                                                                                                                            % the starting values of the free parameters
-        [out.x, out.fval, exitflag] = fmincon(@one_k_one_beta, Parameter,[],[],[],[],lb,ub,[],options,chosen,effort,reward,agent,stim_props,outtype); 
-        out.xnames={'k'; 'beta_self'; 'beta_other'};             % the names of the free parameters
-        out.modelID=modelID;
-        %%% II.) Get modeled schedule:
-        outtype=2;
-        Parameter=out.x;
-        modelout=one_k_one_beta(Parameter,chosen,effort,reward,agent,stim_props,outtype);
-        %%% III.) Now save:
-        modelresults{j}=out;
-        modelresults{j}.info=modelout;
-        
-    elseif strcmp(modelID, 'one_k_one_beta_hyperbolic'),
-        
-        %%%constrain parameters:
-        
-        lb = [0 0];   %lower bounds on parameters
-        ub = [1.5 100]; %upper bounds on parameters
-        
-        %%% I.) first fit the model:
-        outtype=1;
-        Parameter=[.1 .1 ];                                                                                                                            % the starting values of the free parameters
-        [out.x, out.fval, exitflag] = fmincon(@one_k_one_beta_hyperbolic, Parameter,[],[],[],[],lb,ub,[],options,chosen,effort,reward,agent,stim_props,outtype); 
-        out.xnames={'k'; 'beta'};             % the names of the free parameters
-        out.modelID=modelID;
-        %%% II.) Get modeled schedule:
-        outtype=2;
-        Parameter=out.x;
-        modelout=one_k_one_beta_hyperbolic(Parameter,chosen,effort,reward,agent,stim_props,outtype);
-        %%% III.) Now save:
-        modelresults{j}=out;
-        modelresults{j}.info=modelout;
-        
-    elseif strcmp(modelID, 'two_k_one_beta_hyperbolic'),
-        
-        %%%constrain parameters:
-        
-        lb = [0 0 0];   %lower bounds on parameters
-        ub = [1.5 1.5 100]; %upper bounds on parameters
-        
-        %%% I.) first fit the model:
-        outtype=1;
-        Parameter=[.1 .1 .1 ];                                                                                                                            % the starting values of the free parameters
-        [out.x, out.fval, exitflag] = fmincon(@two_k_one_beta_hyperbolic, Parameter,[],[],[],[],lb,ub,[],options,chosen,effort,reward,agent,stim_props,outtype); 
-        out.xnames={'k_self'; 'k_other'; 'beta'};             % the names of the free parameters
-        out.modelID=modelID;
-        %%% II.) Get modeled schedule:
-        outtype=2;
-        Parameter=out.x;
-        modelout=two_k_one_beta_hyperbolic(Parameter,chosen,effort,reward,agent,stim_props,outtype);
-        %%% III.) Now save:
-        modelresults{j}=out;
-        modelresults{j}.info=modelout;
-        
-    elseif strcmp(modelID, 'two_k_two_beta_hyperbolic'),
-        
-        %%%constrain parameters:
-        
-        lb = [0 0 0 0];   %lower bounds on parameters
-        ub = [1.5 1.5 100 100]; %upper bounds on parameters
-        
-        %%% I.) first fit the model:
-        outtype=1;
-        Parameter=[.1 .1 .1 .1 ];                                                                                                                            % the starting values of the free parameters
-        [out.x, out.fval, exitflag] = fmincon(@two_k_two_beta_hyperbolic, Parameter,[],[],[],[],lb,ub,[],options,chosen,effort,reward,agent,stim_props,outtype); 
-        out.xnames={'k_self'; 'k_other'; 'beta_self'; 'beta_other'};             % the names of the free parameters
-        out.modelID=modelID;
-        %%% II.) Get modeled schedule:
-        outtype=2;
-        Parameter=out.x;
-        modelout=two_k_two_beta_hyperbolic(Parameter,chosen,effort,reward,agent,stim_props,outtype);
-        %%% III.) Now save:
-        modelresults{j}=out;
-        modelresults{j}.info=modelout;
-        
-    elseif strcmp(modelID, 'one_k_two_beta_hyperbolic'),
-        
-        %%%constrain parameters:
-        
-        lb = [0 0 0];   %lower bounds on parameters
-        ub = [1.5 100 100]; %upper bounds on parameters
-        
-        %%% I.) first fit the model:
-        outtype=1;
-        Parameter=[.1 .1 .1 ];                                                                                                                            % the starting values of the free parameters
-        [out.x, out.fval, exitflag] = fmincon(@one_k_two_beta_hyperbolic, Parameter,[],[],[],[],lb,ub,[],options,chosen,effort,reward,agent,stim_props,outtype); 
-        out.xnames={'k'; 'beta_self'; 'beta_other'};             % the names of the free parameters
-        out.modelID=modelID;
-        %%% II.) Get modeled schedule:
-        outtype=2;
-        Parameter=out.x;
-        modelout=one_k_two_beta_hyperbolic(Parameter,chosen,effort,reward,agent,stim_props,outtype);
-        %%% III.) Now save:
-        modelresults{j}=out;
-        modelresults{j}.info=modelout;
-        
-        
-        
-    end;
+    %%%constrain parameters:
     
+    if contains(modelID, 'one_k')
+        lbk = kbounds(1);
+        ubk = kbounds(2);
+    elseif contains(modelID, 'two_k')
+        lbk = [kbounds(1), kbounds(1)];
+        ubk = [kbounds(2), kbounds(2)];
+    elseif ~contains(modelID, 'k')
+        lbk = [];
+        ubk = [];
+    else
+        error(['Cant`t determine number of k parameters from model name: ', modelID])
+    end
     
+    if contains(modelID, 'one_rew')
+        lbrew = rewbounds(1);
+        ubrew = rewbounds(2);
+    elseif contains(modelID, 'two_rew')
+        lbrew = [rewbounds(1), rewbounds(1)];
+        ubrew = [rewbounds(2), rewbounds(2)];
+    elseif ~contains(modelID, 'rew')
+        lbrew = [];
+        ubrew = [];
+    else
+        error(['Cant`t determine number of rew parameters from model name: ', modelID])
+    end
     
+    if contains(modelID, 'one_beta')
+        lbbeta = betabounds(1);
+        ubbeta = betabounds(2);
+    elseif contains(modelID, 'two_beta')
+        lbbeta = [betabounds(1), betabounds(1)];
+        ubbeta = [betabounds(2), betabounds(2)];
+    else
+        error(['Can`t determine number of beta parameters from model name: ', modelID])
+    end
     
-end;
+    lb = [lbk, lbrew, lbbeta];   %lower bounds on parameters
+    ub = [ubk, ubrew, ubbeta];   %upper bounds on parameters
+    
+    objfunc = str2func(modelID);
+    
+    %%% I.) First fit the model:
+    outtype=1;
+    out.xnames = get_params(['ms_', modelID]);
+    Parameter=repmat(0.1,1,length(out.xnames));  % starting values for each parameter
+    [out.x, out.fval, exitflag] = fmincon(@all_real, Parameter,[],[],[],[],lb,ub,[], options, chosen, effort, reward, agent, modelID, outtype);
+    out.modelID=modelID;
+    
+    %%% II.) Get modeled schedule:
+    outtype=2;
+    Parameter=out.x;
+    modelout = out;
+    modelout=all_real(Parameter, chosen, effort, reward, agent, modelID, outtype);
+    
+    %%% III.) Now save:
+    
+    if  iteration == 1
+        modelresults{j}=out;
+        modelresults{j}.info=modelout;
+    else
+        if out.fval < data.PM.ml.(modelID){j}.fval
+            out.xnames = data.PM.ml.(modelID){j}.xnames;
+            modelresults{j}=out;
+            modelresults{j}.info=modelout;
+            
+            % just for information:
+            fvaldiff = data.PM.ml.(modelID){j}.fval - out.fval;
+            %             if fvaldiff > 0.1
+            disp([modelID ' : better model found :-) Fval difference: '  num2str(fvaldiff)]);
+            %             end
+        else
+            modelresults{j}=data.PM.ml.(modelID){j};
+            disp([modelID ' : no change'])
+        end
+    end
+end

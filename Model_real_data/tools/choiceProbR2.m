@@ -11,9 +11,7 @@ function [rootfile] = choiceProbR2(rootfile,modelID,EM)
 %              - EM: binary flag to indicate whether the model was fit by
 %                expectation maximisation (EM = 1) or
 %                maximum likelihood (ML; EM = 0)
-% OUTPUT:      - pseudo R squared of the model
-%
-% DEPENDENCIES: - mk_0mod (model fit for chance model for a given subject)
+% OUTPUT:      - choice probability R squared of the model
 
 if nargin<3 % if whether the model was fit by EM or LM is not specified, check in model data
     EM = NaN;
@@ -51,7 +49,8 @@ if EM == 0
             code = char(rootfile.ID{1,is}.ID);
         end
     catch
-        
+    end
+    
     rootfile.(fitops{EM+1}).fit.(modelID).allSubProbMedian  = nanmedian(rootfile.(fitops{EM+1}).fit.(modelID).eachSubProbMedian);
     rootfile.(fitops{EM+1}).fit.(modelID).allSubProbMean = nanmean(rootfile.(fitops{EM+1}).fit.(modelID).eachSubProbMean);
     rootfile.(fitops{EM+1}).fit.(modelID).eachSubProbMedianR2  = (rootfile.(fitops{EM+1}).fit.(modelID).eachSubProbMedian).^2;
@@ -59,7 +58,6 @@ if EM == 0
     rootfile.(fitops{EM+1}).fit.(modelID).choiceProbMedianR2  = rootfile.(fitops{EM+1}).fit.(modelID).allSubProbMedian^2;
     rootfile.(fitops{EM+1}).fit.(modelID).choiceProbMeanR2 = rootfile.(fitops{EM+1}).fit.(modelID).allSubProbMean^2;
 
-    end
 elseif EM == 1
     try
         for is = 1:n_subj

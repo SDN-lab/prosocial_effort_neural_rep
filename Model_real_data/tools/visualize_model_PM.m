@@ -21,6 +21,8 @@ allmodel_IDs={ 'onekonebeta'      'onekonebetamodellinear' 'onekonebetamodelhype
                'twokonebetamodel' 'twokonebetamodellinear' 'twokonebetamodelhyperbolic' ...
                'twoktwobetamodel' 'twoktwobetamodellinear' 'twoktwobetamodelhyperbolic' };
 
+allmodel_IDs=strrep(allmodels,'_','');
+
 figure;
 
 no_o_models=numel(allmodel_IDs);
