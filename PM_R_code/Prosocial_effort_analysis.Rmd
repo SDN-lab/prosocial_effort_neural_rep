@@ -130,7 +130,11 @@ paramestlab <- "Parameter estimates (a.u)"
 
 # trial by trial data for choices and force
 
-d.tbt <- read.csv('data/lme4_PM_data_6_21.csv')                       %>%
+d.tbt <- read.csv('data/lme_data_PM_ID.csv')                  
+
+d.tbt <- d.tbt %>%
+  mutate(Trial = rep(1:200,length(unique(d.tbt$ID))))                 %>% # add index of trial number
+  mutate(Trial = scale(Trial))                                        %>% # mean centre
   filter(chosen !=2)                                                  %>% # get rid of non-responded trials
   mutate(ID = factor(ID))                                             %>% # recode as factor
   mutate(Recipient = factor(Recipient, 
@@ -142,8 +146,13 @@ d.tbt <- read.csv('data/lme4_PM_data_6_21.csv')                       %>%
   mutate(Reward.r = Reward)                                           %>% # keep raw value
   mutate(Success.f = factor(Success))                                     # recode as factor
 
+d.tbt$timeinwindow[d.tbt$timeinwindow > 3] <- NA
+
 # subset for force analysis
-d.tbt.f <- d.tbt %>% filter(chosen == 1)                                 # get rid of rest & non-responded trials
+d.tbt.f <- d.tbt %>% 
+  mutate(Effort = scale(Effort))                                      %>% # mean centre
+  mutate(Reward = scale(Reward))                                      %>% # mean centre
+  filter(chosen == 1)                                                     # get rid of rest & non-responded trials
 
 d.tbt <- d.tbt %>%
   mutate(Effort = Effort^2)                                           %>% # square
@@ -179,7 +188,7 @@ d.rel.bic <- read.csv('data/model_comp_7_10_relative_BIC.csv')
 
 # load MATLAB SPM output containing data for RSA
 
-brainRDM <- readMat('data/makeBrainRDMs_corr_13_1_21_all.mat')[["brainRDM"]]
+brainRDM <- readMat('data/makeBrainRDMs_corr_16_6_22_all.mat')[["brainRDM"]]
 Models <- readMat('data/modelRDMs_May2020.mat')[["Models"]]
 
 # load RDMs for heatmaps
@@ -215,6 +224,30 @@ d.rdm.sV.o <- read.csv('data/sV_RDM_mean_other.csv', col.names = rdmnames, heade
   mutate(xcondition = factor(xcondition)) %>% 
   mutate(ycondition = factor(ycondition))
 
+d.means <- d.tbt %>%
+  dplyr::group_by(ID, Recipient) %>%
+  dplyr::summarise(Accept = mean(chosen), RT = mean(RT, na.rm = T), .groups = "drop")
+
+self.other.mean.se <- d.means %>%
+  dplyr::group_by(Recipient) %>%
+  dplyr::summarise(mean.Accept = mean(Accept), se.Accept = std_err(Accept), mean.RT = mean(RT), se.RT = std_err(RT), .groups = "drop")
+
+d.success <- d.tbt.f %>%
+  dplyr::group_by(ID, Recipient) %>%
+  dplyr::summarise(TiW = mean(timeinwindow, na.rm = T), Success = mean(Success), Force = mean(Force_norm), .groups = "drop")
+
+self.other.success <- d.success %>%
+  dplyr::group_by(Recipient) %>%
+  dplyr::summarise(mean.TiW = mean(TiW), se.TiW = std_err(TiW), mean.Success = mean(Success), se.Success = std_err(Success), mean.Force = mean(Force), se.Force = std_err(Force), .groups = "drop")
+
+self.other.mean.se <- left_join(self.other.mean.se, self.other.success, by = "Recipient")
+
+d.means <- left_join(d.means, d.success)
+
+d.means.wide <- pivot_wider(d.means, id_cols = "ID", names_from = "Recipient", values_from = c("Accept", "RT", "Success", "TiW", "Force"))
+
+if (savecsvs == 1) {write_csv(d.means.wide, "data/participant_averages_PM_fmri.csv")} # save csv for JASP BF analysis
+
 ```
 
 ## Analyse choice data
@@ -232,56 +265,74 @@ d.rdm.sV.o <- read.csv('data/sV_RDM_mean_other.csv', col.names = rdmnames, heade
 # 
 # set.seed(7531) # make it reproducible
 # 
-# m.choice <- mixed(chosen ~ Recipient*Effort*Reward + (1 |ID),
+# m.choice.rs <- mixed(chosen ~ Recipient*Effort*Reward + (1 + Recipient + Effort + Reward + Recipient:Effort + Recipient:Reward + Effort:Reward || ID),
 #                   data = d.tbt, family = 'binomial',
-#                   check_contrasts = T,
-#                   method = "PB", type = 2, cl = cl, args_test = list(cl = cl))
+#                   check_contrasts = T,  expand_re = T,
+#                   method = "PB", type = 2, cl = cl, args_test = list(cl = cl),
+#                   control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)))
 # 
-# save(m.choice, file = "output/choice_model.RData")
+# save(m.choice.rs, file = "output/choice_model_rs.RData")
+# 
 # stopCluster(cl)
 
-load("output/choice_model.RData")
+load("output/choice_model_rs.RData")
 
 # faster version without bootstrapping
 
-# m.choice.glmer <- glmer(chosen ~ Recipient*Effort*Reward + (1 |ID),
-#                   data = d.tbt, family = 'binomial',
-#                   control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=2e5)))
+m.choice.fast.rs <- mixed(chosen ~ Recipient*Effort*Reward + 
+                            (1 + Recipient + Effort + Reward + Recipient:Effort + Recipient:Reward + Effort:Reward || ID),
+                          data = d.tbt, family = 'binomial', method = "LRT",
+                          check_contrasts = T, type = 2, return = "merMod", expand_re = T,
+                          control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)))
 
-r.choice.a <- anova(m.choice) # get chisq stats, dfs and bootstrapped p values
+r.choice.rs.a <- anova(m.choice.rs) # get chisq stats, dfs and bootstrapped p values
 
 # format and combine results
-r.choice <- model_parameters(m.choice$full_model[[3]], standardize = "refit", exponentiate = T) %>% # exponentiate for odds ratios
-  # model_parameters(m.choice.glmer, standardize = "refit", exponentiate = T) %>% # if looking at results from fast version
+
+r.choice.rs <- 
+  model_parameters(m.choice.rs$full_model[[3]], standardize = "refit", exponentiate = T) %>% # exponentiate for odds ratios
+  # model_parameters(m.choice.rs, standardize = "refit", exponentiate = T) %>% # if looking at results from fast version
   filter(Effects == "fixed") %>% 
-  select(!c(df_error, Effects, Group)) %>% 
+  select(!c(df_error, Effects)) %>% #, Group
   mutate(Parameter = str_replace(Parameter, pattern = "Recipient1", replacement = "Recipient (Self vs. Other)")) %>% 
   mutate(Parameter = str_replace_all(Parameter, pattern = ":", replacement = " * ")) %>% 
-  add_column("Chisq" = c(NA, r.choice.a$Chisq), .before = "p") %>% 
-  add_column("df" = c(NA, r.choice.a$`Chi Df`), .before = "p") %>% 
-  mutate(p = c(NA, r.choice.a$`Pr(>PB)`)) # comment out if looking at results from fast version
+  add_column("Chisq" = c(NA, r.choice.rs.a$Chisq), .before = "p") %>%
+  add_column("df" = c(NA, r.choice.rs.a$`Chi Df`), .before = "p") %>%
+  mutate(p = c(NA, r.choice.rs.a$`Pr(>PB)`)) # comment out if looking at results from fast version
+
+# check effects of trial number
+
+m.choice.trial <- mixed(chosen ~ Trial*Recipient + Recipient*Effort*Reward + 
+                          (1 + Trial + Recipient + Effort + Reward + 
+                             Recipient:Trial + Recipient:Effort + Recipient:Reward + Effort:Reward || ID),
+                        data = d.tbt, family = 'binomial', method = "LRT",
+                        check_contrasts = T, type = 2, return = "merMod", expand_re = T,
+                        control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)))
+
+r.choice.trial.as <- anova(m.choice.trial) # get chisq stats, dfs and bootstrapped p values
+
+r.choice.trial <- 
+  model_parameters(m.choice.trial, standardize = "refit", exponentiate = T) %>% # if looking at results from fast version
+  filter(Effects == "fixed") %>% 
+  select(!c(df_error, Effects)) %>% #, Group
+  mutate(Parameter = str_replace(Parameter, pattern = "Recipient1", replacement = "Recipient (Self vs. Other)")) %>% 
+  mutate(Parameter = str_replace_all(Parameter, pattern = ":", replacement = " * ")) %>% 
+  add_column("Chisq" = c(NA, r.choice.trial.as$Chisq), .before = "p") %>%
+  add_column("df" = c(NA, r.choice.trial.as$`Chi Df`), .before = "p")
+
+# Wilcoxon signed-rank test on choice for self vs other
+
+wilcox.choice <- wilcox.test(d.means$Accept[d.means$Recipient=='Other'], 
+                              d.means$Accept[d.means$Recipient=='Self'], 
+                              paired = T, conf.int = T)
+Zstat.choice <- qnorm(wilcox.choice$p.value/2)
+wilcox.es.choice <- wilcox_effsize(Accept ~ Recipient, data = d.means, ci = TRUE) %>% 
+  as.data.frame() %>% 
+  add_column("measure" = "Accept") %>% 
+  add_column("Z" = Zstat.choice) %>% 
+  add_column("p" = wilcox.choice[["p.value"]])
 
 ```
-
-We observed a significant
-recipient\*effort\*reward interaction (odds ratio
-(OR)=`r format(round(r.choice$Coefficient[r.choice$Parameter == "Recipient (Self vs. Other) * Effort * Reward"],digits=2), nsmall=2)`,
-95% confidence
-interval=[`r format(round(r.choice$CI_low[r.choice$Parameter == "Recipient (Self vs. Other) * Effort * Reward"],digits=2), nsmall=2)`,
-`r format(round(r.choice$CI_high[r.choice$Parameter == "Recipient (Self vs. Other) * Effort * Reward"],digits=2), nsmall=2)`],
-*p*`r pvalr(r.choice$p[r.choice$Parameter == "Recipient (Self vs. Other) * Effort * Reward"])`), 
-showing that people were less willing to help others at higher effort and lower reward levels.
-We also observed significant interactions between recipient and reward
-(OR=`r format(round(r.choice$Coefficient[r.choice$Parameter == "Recipient (Self vs. Other) * Reward"],digits=2), nsmall=2)`
-[`r format(round(r.choice$CI_low[r.choice$Parameter == "Recipient (Self vs. Other) * Reward"],digits=2), nsmall=2)`,
-`r format(round(r.choice$CI_high[r.choice$Parameter == "Recipient (Self vs. Other) * Reward"],digits=2), nsmall=2)`],
-*p*`r pvalr(r.choice$p[r.choice$Parameter == "Recipient (Self vs. Other) * Reward"])`),
-effort and reward
-(OR=`r format(round(r.choice$Coefficient[r.choice$Parameter == "Effort * Reward"],digits=2), nsmall=2)`
-[`r format(round(r.choice$CI_low[r.choice$Parameter == "Effort * Reward"],digits=2), nsmall=2)`,
-`r format(round(r.choice$CI_high[r.choice$Parameter == "Effort * Reward"],digits=2), nsmall=2)`],
-*p*`r pvalr(r.choice$p[r.choice$Parameter == "Effort * Reward"])`), and
-main effects of recipient, effort, and reward (Figures 2a-b, S3 and Table S1).
 
 ## Analyse `r "<i>\u039A</i>"` parameters
 
@@ -294,17 +345,6 @@ Zstat.k <- qnorm(wilcox.k$p.value/2) # get z value
 wilcox.es.k <- wilcox_effsize(k ~ Recipient, data = d, ci = TRUE) # get confidence intervals
 
 ```
-
-This analysis showed that discount values for other were significantly
-higher for other (`r "<i>\u039A</i>"`<sub>other</sub>
-median=`r median(d$k[d$Recipient == "Other"], na.rm = T)`) than for self
-(`r "<i>\u039A</i>"`<sub>self</sub>
-median=`r median(d$k[d$Recipient == "Self"], na.rm = T)`, 
-Wilcoxon two-sided signed rank test Z=`r format(round(Zstat.k,digits=2), nsmall=2)`, 
-effect size *r*=`r format(round(wilcox.es.k$effsize[1],digits=2), nsmall=2)`,
-[`r format(round(wilcox.es.k$conf.low[1],digits=2), nsmall=2)`,
-`r format(round(wilcox.es.k$conf.high[1],digits=2), nsmall=2)`],
-*p*`r pvalr(wilcox.k[["p.value"]])`, Figure 2f).
 
 ## Analyse force data
 
@@ -321,72 +361,131 @@ effect size *r*=`r format(round(wilcox.es.k$effsize[1],digits=2), nsmall=2)`,
 # 
 # set.seed(8642) # make it reproducible
 # 
-# m.force <- mixed(Force_norm ~ Recipient*Effort.f*Reward.f + (1 | ID), data = d.tbt.f,
-#                  check_contrasts = T,
+# m.force.rs <- mixed(Force_norm ~ Recipient*Effort.f*Reward.f + (1 + Recipient + Effort.f || ID), data = d.tbt.f,
+#                  check_contrasts = T, expand_re = T,
+#                  control=lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)),
 #                  method = "PB", type = 2, cl = cl, args_test = list(cl = cl))
 # 
-# save(m.force, file = "output/force_model.RData")
+# save(m.force.rs, file = "output/force_model_rs.RData")
+# 
+# stopCluster(cl)
 
-load("output/force_model.RData")
+load("output/force_model_rs.RData")
 
-# slightly faster version without bootstrapping
-
-# m.force.lmer <- lmer(Force_norm ~ Recipient*Effort.f*Reward.f + (1 |ID), data = d.tbt.f, REML = F)
-
-r.force <- anova(m.force) # get chisq stats, dfs and bootstrapped p values
+r.force.rs <- anova(m.force.rs) # get chisq stats, dfs and bootstrapped p values
 
 # format and combine results
-r.force <- r.force %>% 
-  add_column("Parameter" = rownames(r.force), .before = 1) %>% 
+r.force.rs <- r.force.rs %>% 
+  add_column("Parameter" = rownames(r.force.rs), .before = 1) %>% 
   as_tibble() %>%
   mutate(Parameter = str_replace(Parameter, pattern = "Recipient", replacement = "Recipient (Self vs. Other)")) %>%
   mutate(Parameter = str_replace(Parameter, pattern = "Reward.f", replacement = "Reward")) %>%
   mutate(Parameter = str_replace(Parameter, pattern = "Effort.f", replacement = "Effort")) %>%
   mutate(Parameter = str_replace_all(Parameter, pattern = ":", replacement = " * ")) %>% 
-  select(!"Pr(>Chisq)") %>% 
-  rename("df" = "Chi Df") %>% 
+  select(!"Pr(>Chisq)") %>%
+  rename("df" = "Chi Df") %>%
   rename("p" = "Pr(>PB)")
+
+# Wilcoxon signed-rank test on force for self vs other
+
+wilcox.force <- wilcox.test(d.means$Force[d.means$Recipient=='Other'], 
+                            d.means$Force[d.means$Recipient=='Self'], 
+                            paired = T, conf.int = T)
+Zstat.force <- qnorm(wilcox.force$p.value/2)
+wilcox.es.force <- wilcox_effsize(Force ~ Recipient, data = d.means, ci = TRUE) %>% 
+  as.data.frame() %>% 
+  add_column("measure" = "Force") %>% 
+  add_column("Z" = Zstat.force) %>% 
+  add_column("p" = wilcox.force[["p.value"]])
 
 # Wilcoxon signed-rank test on success rate for self vs other
 
-d.success <- d.tbt %>%
-  dplyr::group_by(ID, Recipient) %>%
-  dplyr::summarise(mean = mean(Success, na.rm = T), .groups = "drop")
-
-wilcox.success <- wilcox.test(d.success$mean[d.success$Recipient=='Other'], 
-                              d.success$mean[d.success$Recipient=='Self'], 
+wilcox.success <- wilcox.test(d.means$Success[d.means$Recipient=='Other'], 
+                              d.means$Success[d.means$Recipient=='Self'], 
                               paired = T, conf.int = T)
 Zstat.success <- qnorm(wilcox.success$p.value/2)
-wilcox.es.success <- wilcox_effsize(mean ~ Recipient, data = d.success, ci = TRUE)
+wilcox.es.success <- wilcox_effsize(Success ~ Recipient, data = d.means, ci = TRUE) %>% 
+  as.data.frame() %>% 
+  add_column("measure" = "Success") %>% 
+  add_column("Z" = Zstat.success) %>% 
+  add_column("p" = wilcox.success[["p.value"]])
 
-d.success.wide <- pivot_wider(d.success, id_cols = "ID", names_from = "Recipient", values_from = "mean")
+m.success.trial <- mixed(Success ~ Trial*Recipient + Recipient*Effort*Reward + 
+                           (1 + Recipient + Effort || ID),
+                         data = d.tbt.f, family = 'binomial', method = "LRT",
+                         check_contrasts = T, type = 2, return = "merMod", expand_re = T,
+                         control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)))
 
-if (savecsvs == 1) {write_csv(d.success.wide, "data/success_averages_PM_fmri.csv")} # save csv for JASP BF analysis
+r.success.trial.as <- anova(m.success.trial) # get chisq stats, dfs and bootstrapped p values
+
+r.success.trial <- 
+  model_parameters(m.success.trial, standardize = "refit", exponentiate = T) %>% # if looking at results from fast version
+  filter(Effects == "fixed") %>% 
+  select(!c(df_error, Effects)) %>% #, Group
+  mutate(Parameter = str_replace(Parameter, pattern = "Recipient1", replacement = "Recipient (Self vs. Other)")) %>% 
+  mutate(Parameter = str_replace_all(Parameter, pattern = ":", replacement = " * ")) %>% 
+  add_column("Chisq" = c(NA, r.success.trial.as$Chisq), .before = "p") %>%
+  add_column("df" = c(NA, r.success.trial.as$`Chi Df`), .before = "p")
 
 ```
 
-We observed a significant 3-way interaction between effort, reward, and recipient
-(`r "<i>\u03C7</i>"`<sup>2</sup><sub>(`r r.force$df[r.force$Parameter == "Recipient (Self vs. Other) * Effort * Reward"]`)</sub>=`r format(round(r.force$Chisq[r.force$Parameter == "Recipient (Self vs. Other) * Effort * Reward"],digits=2), nsmall=2)`,
-*p*`r pvalr(r.force$p[r.force$Parameter == "Recipient (Self vs. Other) * Effort * Reward"])`).
-We also found significant interactions between recipient and reward
-(`r "<i>\u03C7</i>"`<sup>2</sup><sub>(`r r.force$df[r.force$Parameter == "Recipient (Self vs. Other) * Reward"]`)</sub>=`r format(round(r.force$Chisq[r.force$Parameter == "Recipient (Self vs. Other) * Reward"],digits=2), nsmall=2)`,
-*p*`r pvalr(r.force$p[r.force$Parameter == "Recipient (Self vs. Other) * Reward"])`),
-effort and reward
-(`r "<i>\u03C7</i>"`<sup>2</sup><sub>(`r r.force$df[r.force$Parameter == "Effort * Reward"]`)</sub>=`r format(round(r.force$Chisq[r.force$Parameter == "Effort * Reward"],digits=2), nsmall=2)`,
-*p*`r pvalr(r.force$p[r.force$Parameter == "Effort * Reward"])`), and
-main effects of recipient, effort, and reward (all `r "<i>\u03C7</i>"`<sup>2</sup>s>`r format(round(min(abs(r.force$Chisq[r.force$Parameter == "Recipient (Self vs. Other)"]), abs(r.force$Chisq[r.force$Parameter == "Effort"]), abs(r.force$Chisq[r.force$Parameter == "Reward"])),digits=2), nsmall=2)`,
-all *p*s<`r format(round(max(r.force$p[r.force$p == "Recipient (Self vs. Other)"], r.force$p[r.force$Parameter == "Effort"], r.force$p[r.force$Parameter == "Reward"]),digits=3), nsmall=3)`; Figure 2g-h and Table S2).
-Importantly, there was no significant difference in success between self
-(mean=`r mean(d.success$mean[d.success$Recipient == "Self"], na.rm = T)`)
-and other trials
-(mean=`r mean(d.success$mean[d.success$Recipient == "Self"], na.rm = T)`,
-Wilcoxon two-sided signed rank test Z=`r format(round(Zstat.success,digits=2), nsmall=2)`, 
-effect size *r*=`r format(round(wilcox.es.success$effsize[1],digits=2), nsmall=2)`,
-[`r format(round(wilcox.es.success$conf.low[1],digits=2), nsmall=2)`,
-`r format(round(wilcox.es.success$conf.high[1],digits=2), nsmall=2)`],
-*p*`r pvalr(wilcox.success[["p.value"]])`) and Bayesian evidence for no
-difference (BF<sub>01</sub>=4.35, substantial evidence in support of the
-null).
+## Analyse RT & time in window data
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+
+wilcox.rt <- wilcox.test(d.means$RT[d.means$Recipient=='Other'], 
+                         d.means$RT[d.means$Recipient=='Self'], 
+                         paired = T, conf.int = T)
+Zstat.rt <- qnorm(wilcox.rt$p.value/2)
+wilcox.es.rt <- wilcox_effsize(RT ~ Recipient, data = d.means, ci = TRUE) %>% 
+  as.data.frame() %>% 
+  add_column("measure" = "RT") %>% 
+  add_column("Z" = Zstat.rt) %>% 
+  add_column("p" = wilcox.rt[["p.value"]])
+
+wilcox.tiw <- wilcox.test(d.means$TiW[d.means$Recipient=='Other'], 
+                          d.means$TiW[d.means$Recipient=='Self'], 
+                          paired = T, conf.int = T)
+Zstat.tiw <- qnorm(wilcox.tiw$p.value/2)
+wilcox.es.tiw <- wilcox_effsize(TiW ~ Recipient, data = d.means, ci = TRUE) %>% 
+  as.data.frame() %>% 
+  add_column("measure" = "TiW") %>% 
+  add_column("Z" = Zstat.tiw) %>% 
+  add_column("p" = wilcox.tiw[["p.value"]])
+
+d.means.wide$RT_Diff_os <- d.means.wide$RT_Other - d.means.wide$RT_Self
+d.means.wide$TiW_Diff_so <- d.means.wide$TiW_Self - d.means.wide$TiW_Other
+
+rt.tiw.corr <- cor.test(d.means.wide$RT_Diff_os, d.means.wide$TiW_Diff_so, method = "spearman")
+
+self.other.mean.se.diff <- self.other.mean.se %>% 
+  select(!Recipient) %>% 
+  head() %>%
+  rownames_to_column() %>%
+  pivot_longer(cols = -rowname) %>%
+  pivot_wider(names_from = rowname) %>%
+  rename("category" = 1) %>%
+  as.data.frame() %>% 
+  rename("self" = "1") %>% 
+  rename("other" = "2") %>%
+  separate(col = category, into = c('type', 'measure')) %>% 
+  pivot_wider(values_from = c("self", "other"), names_from = type, id_cols = measure)
+
+self.other.diff <- bind_rows(wilcox.es.choice %>% 
+                               select("measure", "Z", "effsize", "conf.low", "conf.high", "p"),
+                             wilcox.es.rt %>% 
+                               select("measure", "Z", "effsize", "conf.low", "conf.high", "p"),
+                             wilcox.es.tiw %>% 
+                               select("measure", "Z", "effsize", "conf.low", "conf.high", "p"),
+                             wilcox.es.success %>% 
+                               select("measure", "Z", "effsize", "conf.low", "conf.high", "p"),
+                             wilcox.es.force %>% 
+                               select("measure", "Z", "effsize", "conf.low", "conf.high", "p"))
+
+
+self.other.mean.se.diff <- left_join(self.other.mean.se.diff, self.other.diff, by = "measure")
+  
+```
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE, fig.height=plotH, fig.width=corrplotW}
 
@@ -528,6 +627,280 @@ win.mod <- ggplot(win.mod.text) +
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE}
 
+# data with model comparison results
+
+d.rel.bic <- read.csv('data/model_comp_relative_BIC.csv')
+
+d.rel.bic$model_wrong <- d.rel.bic$model
+d.rel.bic$row <- NA
+d.rel.bic$type <- NA
+
+new <- c(1:12, 29:40, 13:24, 25:28)
+
+for (n in 1:40) {
+  w <- new[n]
+  d.rel.bic$model[d.rel.bic$model_wrong == w] <- n
+  if (n <= 12){
+    d.rel.bic$row[d.rel.bic$model_wrong == w] <- 1
+    d.rel.bic$type[d.rel.bic$model_wrong == w] <- 1
+  } else if (n >= 13 & n <=24){
+    d.rel.bic$row[d.rel.bic$model_wrong == w] <- 1
+    d.rel.bic$type[d.rel.bic$model_wrong == w] <- 2
+  } else if (n >= 25 & n <=36){
+    d.rel.bic$row[d.rel.bic$model_wrong == w] <- 2
+    d.rel.bic$type[d.rel.bic$model_wrong == w] <- 3
+  } else if (n >= 37){
+    d.rel.bic$row[d.rel.bic$model_wrong == w] <- 2
+    d.rel.bic$type[d.rel.bic$model_wrong == w] <- 4
+  }
+}
+
+d.rel.bic <- d.rel.bic %>% 
+  mutate(type = factor(type, 
+                       labels = c('m1-m12: effort discounting',
+                                  'm13-m24: effort & reward',
+                                  'm25-m36: reward sensitivity',
+                                  'm37-m40: reward-effort difference')))
+
+d.rel.bic <-
+  d.rel.bic %>% 
+  add_row(model = 41, rel.bic = NA, row = 2) %>% 
+  add_row(model = 42, rel.bic = NA, row = 2) %>% 
+  add_row(model = 43, rel.bic = NA, row = 2) %>% 
+  add_row(model = 44, rel.bic = NA, row = 2) %>% 
+  add_row(model = 45, rel.bic = NA, row = 2) %>% 
+  add_row(model = 46, rel.bic = NA, row = 2) %>% 
+  add_row(model = 47, rel.bic = NA, row = 2) %>% 
+  add_row(model = 48, rel.bic = NA, row = 2)
+
+# plot model comparison results for all models
+plot.prop.bic10 <- ggplot(d.rel.bic, aes(x="", y=proportion10, fill=as.factor(model))) +
+  geom_bar(stat="identity", width=2, colour = "white") +
+  coord_polar("y", start = 1.01229097) +
+  geom_text(aes(label = paste0("m", model, "\n", proportion10, "%")), position = position_stack(vjust=0.5), 
+            colour = "white", size = (axtext/3)) +
+  labs(x = NULL, y = NULL, fill = NULL) +
+  theme_classic() +
+  theme(axis.line = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        legend.position = 'none',
+        panel.background = element_rect(fill = "transparent"),
+        plot.background = element_rect(fill = "transparent", color = NA)) +
+  scale_fill_manual(values=c("#203964", "#7031A0"))
+
+plot.prop.bic19 <- ggplot(d.rel.bic, aes(x="", y=proportion19, fill=as.factor(model))) +
+  geom_bar(stat="identity", width=2, colour = "white") +
+  coord_polar("y", start = 0.698132) +
+  geom_text(aes(label = paste0("m", model, "\n", proportion19, "%")), position = position_stack(vjust=0.5), 
+            colour = "white", size = (axtext/3)) +
+  labs(x = NULL, y = NULL, fill = NULL) +
+  theme_classic() +
+  theme(axis.line = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        legend.position = 'none',
+        panel.background = element_rect(fill = "transparent"), 
+        plot.background = element_rect(fill = "transparent", color = NA)) +
+  scale_fill_manual(values=c("#203964", "#a0319a"))
+
+plot.prop.bic22 <- ggplot(d.rel.bic, aes(x="", y=proportion22, fill=as.factor(model))) +
+  geom_bar(stat="identity", width=2, colour = "white") +
+  coord_polar("y", start = 1.50098) +
+  geom_text(aes(label = paste0("m", model, "\n", proportion22, "%")), position = position_stack(vjust=0.5), 
+            colour = "white", size = (axtext/3)) +
+  labs(x = NULL, y = NULL, fill = NULL) +
+  theme_classic() +
+  theme(axis.line = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        legend.position = 'none',
+        panel.background = element_rect(fill = "transparent"), 
+        plot.background = element_rect(fill = "transparent", color = NA)) +
+  scale_fill_manual(values=c("#203964", "#a03161"))
+
+plot.rel.bic.rs <- ggplot(d.rel.bic %>% subset(!is.na(type)), aes(x = model, y = rel.bic, alpha = type)) + 
+  geom_bar(stat = "identity", size = 0.5, colour = 'black',
+           fill = 'black', position=position_dodge(0.5), width = 0.5) +
+  scale_y_continuous(name = "BIC relative to\nwinning model") +
+  scale_x_continuous(name = 'Model number (m)', breaks = c(1:24), limits = c(0.4,24.6)) + 
+  scale_alpha_manual(values = c(0.75, 0.5, 0.25, 0)) +
+  theme_classic() + 
+  theme(legend.title = element_blank(),
+        legend.text = element_text(size = axtext),
+        axis.text=element_text(size = axtext),
+        axis.text.x=element_text(size = axtext),
+        axis.title.x = element_text(size = axtitle),
+        axis.title.y = element_text(size = axtitle))
+
+leg.rel.bic.rs <- get_legend(plot.rel.bic.rs)
+
+plot.rel.bic.rs <- ggplot(d.rel.bic %>% subset(row == 1), aes(x = as.factor(model), y = rel.bic, alpha = type)) + 
+  geom_bar(stat = "identity", size = 0.5, colour = 'black',
+           fill = 'black', position=position_dodge(0.5), width = 0.5) +
+  scale_y_continuous(name = "BIC relative to\nwinning model", limits = c(-50, 5000), breaks = seq(from = 0, to = 5000, by = 1000)) +
+  scale_x_discrete(name = 'Model number (m)') + 
+  scale_alpha_manual(values = c(0.75, 0.5, 0.25, 0)) +
+  theme_classic() + 
+  theme(legend.position = 'none',
+        legend.text = element_text(size = axtext),
+        axis.text=element_text(size = axtext),
+        axis.text.x=element_text(size = axtext),
+        axis.title.x = element_text(size = axtitle),
+        axis.title.y = element_text(size = axtitle))
+
+plot.rel.bic.rs2 <- ggplot(d.rel.bic %>% subset(row == 2), aes(x = as.factor(model), y = rel.bic, alpha = type)) + 
+  geom_bar(stat = "identity", size = 0.5, colour = 'black',
+           fill = 'black', position=position_dodge(0.5), width = 0.5) +
+  scale_y_continuous(name = "BIC relative to\nwinning model", limits = c(-50, 5000), breaks = seq(from = 0, to = 5000, by = 1000)) +
+  scale_x_discrete(name = 'Model number (m)', labels = c(as.character(c(25:40)), rep("",8))) + 
+  scale_alpha_manual(values = c(0.25, 0)) +
+  theme_classic() + 
+  theme(legend.position = 'none',
+        axis.text=element_text(size = axtext),
+        axis.text.x=element_text(size = axtext),
+        axis.title.x = element_text(size = axtitle),
+        axis.title.y = element_text(size = axtitle))
+
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+
+# model comparison results with different kbounds
+
+# d.rel.bic <- read.csv('data/model_comp_kbounds.csv')
+# 
+# plot.rel.bic.1.5 <- ggplot(d.rel.bic, aes(x = as.factor(model), y = rel.bic1.5)) + 
+#   geom_bar(stat = "identity", size = 0.5, alpha = 0.8, colour = 'black',
+#            fill = '#EDEDED', position=position_dodge(0.5), width = 0.5) +
+#   scale_y_continuous(name = "BIC relative to\nwinning model") +
+#   scale_x_discrete(name = 'Model number') + 
+#   theme_classic() + 
+#   ggtitle(paste0("0<","*\u039A*","<1.5")) +
+#   theme(legend.position = 'none',
+#         plot.title=element_markdown(size = axtitle, hjust = 0.5),
+#         axis.text=element_text(size = axtext),
+#         axis.text.x=element_text(size = axtext),
+#         axis.title.x = element_text(size = axtitle),
+#         axis.title.y = element_text(size = axtitle))
+# 
+# plot.rel.bic.3 <- ggplot(d.rel.bic, aes(x = as.factor(model), y = rel.bic3)) + 
+#   geom_bar(stat = "identity", size = 0.5, alpha = 0.8, colour = 'black',
+#            fill = '#EDEDED', position=position_dodge(0.5), width = 0.5) +
+#   scale_y_continuous(name = "BIC relative to\nwinning model") +
+#   scale_x_discrete(name = 'Model number') + 
+#   theme_classic() + 
+#   ggtitle(paste0("0<","*\u039A*","<3")) +
+#   theme(legend.position = 'none',
+#         plot.title=element_markdown(size = axtitle, hjust = 0.5),
+#         axis.text=element_text(size = axtext),
+#         axis.text.x=element_text(size = axtext),
+#         axis.title.x = element_text(size = axtitle),
+#         axis.title.y = element_text(size = axtitle))
+# 
+# plot.rel.bic.10 <- ggplot(d.rel.bic, aes(x = as.factor(model), y = rel.bic10)) + 
+#   geom_bar(stat = "identity", size = 0.5, alpha = 0.8, colour = 'black',
+#            fill = '#EDEDED', position=position_dodge(0.5), width = 0.5) +
+#   scale_y_continuous(name = "BIC relative to\nwinning model") +
+#   scale_x_discrete(name = 'Model number') + 
+#   theme_classic() + 
+#   ggtitle(paste0("0<","*\u039A*","<10")) +
+#   theme(legend.position = 'none',
+#         plot.title=element_markdown(size = axtitle, hjust = 0.5),
+#         axis.text=element_text(size = axtext),
+#         axis.text.x=element_text(size = axtext),
+#         axis.title.x = element_text(size = axtitle),
+#         axis.title.y = element_text(size = axtitle))
+# 
+# plot.rel.bic.kbounds <- plot_grid(plot.rel.bic.1.5, plot.rel.bic.3, plot.rel.bic.10, 
+#                      nrow = 3, ncol = 1,
+#                      label_size = axtitle, labels = "auto", axis = "l", align = "hv")
+# 
+# plot.rel.bic.kbounds
+
+d.rel.bic <- read.csv('data/model_comp_kbounds.csv')
+
+d.rel.bic$model_wrong <- d.rel.bic$model
+d.rel.bic$row <- NA
+d.rel.bic$type <- NA
+
+new <- c(1:12, 29:40, 13:24, 25:28)
+
+for (n in 1:40) {
+  w <- new[n]
+  d.rel.bic$model[d.rel.bic$model_wrong == w] <- n
+  if (n <= 12){
+    d.rel.bic$row[d.rel.bic$model_wrong == w] <- 1
+    d.rel.bic$type[d.rel.bic$model_wrong == w] <- 1
+  } else if (n >= 13 & n <=24){
+    d.rel.bic$row[d.rel.bic$model_wrong == w] <- 1
+    d.rel.bic$type[d.rel.bic$model_wrong == w] <- 2
+  } else if (n >= 25 & n <=36){
+    d.rel.bic$row[d.rel.bic$model_wrong == w] <- 2
+    d.rel.bic$type[d.rel.bic$model_wrong == w] <- 3
+  } else if (n >= 37){
+    d.rel.bic$row[d.rel.bic$model_wrong == w] <- 2
+    d.rel.bic$type[d.rel.bic$model_wrong == w] <- 4
+  }
+}
+
+d.rel.bic <- d.rel.bic %>% 
+  mutate(type = factor(type, 
+                       labels = c('m1-m12: effort discounting',
+                                  'm13-m24: effort & reward',
+                                  'm25-m36: reward sensitivity',
+                                  'm37-m40: reward-effort difference')))
+
+
+plot.rel.bic.1.5 <- ggplot(d.rel.bic, aes(x = as.factor(model), y = rel.bic1.5, alpha = type)) + 
+  geom_bar(stat = "identity", size = 0.5, colour = 'black',
+           fill = 'black', position=position_dodge(0.5), width = 0.5) +
+  scale_y_continuous(name = "BIC relative to\nwinning model") +
+  scale_x_discrete(name = 'Model number') + 
+  scale_alpha_manual(values = c(0.75, 0.5, 0.25, 0)) +
+  theme_classic() + 
+  ggtitle(paste0("0<","*\u039A*","<1.5")) +
+  theme(legend.position = 'none',
+        plot.title=element_markdown(size = axtitle, hjust = 0.5),
+        axis.text=element_text(size = axtext),
+        axis.text.x=element_text(size = axtext),
+        axis.title.x = element_text(size = axtitle),
+        axis.title.y = element_text(size = axtitle))
+
+plot.rel.bic.3 <- ggplot(d.rel.bic, aes(x = as.factor(model), y = rel.bic3, alpha = type)) + 
+  geom_bar(stat = "identity", size = 0.5, colour = 'black',
+           fill = 'black', position=position_dodge(0.5), width = 0.5) +
+  scale_y_continuous(name = "BIC relative to\nwinning model") +
+  scale_x_discrete(name = 'Model number') + 
+  scale_alpha_manual(values = c(0.75, 0.5, 0.25, 0)) +
+  theme_classic() + 
+  ggtitle(paste0("0<","*\u039A*","<3")) +
+  theme(legend.position = 'none',
+        plot.title=element_markdown(size = axtitle, hjust = 0.5),
+        axis.text=element_text(size = axtext),
+        axis.text.x=element_text(size = axtext),
+        axis.title.x = element_text(size = axtitle),
+        axis.title.y = element_text(size = axtitle))
+
+plot.rel.bic.10 <- ggplot(d.rel.bic, aes(x = as.factor(model), y = rel.bic10, alpha = type)) + 
+  geom_bar(stat = "identity", size = 0.5, colour = 'black',
+           fill = 'black', position=position_dodge(0.5), width = 0.5) +
+  scale_y_continuous(name = "BIC relative to\nwinning model") +
+  scale_x_discrete(name = 'Model number') + 
+  scale_alpha_manual(values = c(0.75, 0.5, 0.25, 0)) +
+  theme_classic() + 
+  ggtitle(paste0("0<","*\u039A*","<10")) +
+  theme(legend.position = 'none',
+        plot.title=element_markdown(size = axtitle, hjust = 0.5),
+        axis.text=element_text(size = axtext),
+        axis.text.x=element_text(size = axtext),
+        axis.title.x = element_text(size = axtitle),
+        axis.title.y = element_text(size = axtitle))
+
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+
 ## plot parameter recovery
 
 df.pr <- read_csv("data/Parameter_recovery_mle.csv", col_names = T)
@@ -563,7 +936,7 @@ h.plot <- ggplot(data = df.pr, aes(x=Simulated, y=Recovered, fill=MLCorr)) +
 
 ## plot model identifiability
 
-df.mi <- read_csv("data/Model_identifiability_mle.csv", col_names = T)
+df.mi <- read_csv("data/Model_identifiability_mle_12_models.csv", col_names = T)
 
 if (saveplots == 1) {tiff("plotpanels/Model_iden_bicp.tiff", units="in", res = resolution, width = modplotW, height = plotH)}
 
@@ -611,6 +984,68 @@ bm.plot <- ggplot(data = df.mi, aes(x=Simulated, y=Estimated, fill=best)) +
         legend.text = element_text(size = axtext))
 
 # bm.plot
+
+# if (saveplots == 1) {dev.off()}
+
+## plot model identifiability - reward sensitivity models
+
+df.mi.rs <- read_csv("data/Model_identifiability_mle.csv", col_names = T)
+
+df.mi.rs$Simulated_wrong <- df.mi.rs$Simulated
+df.mi.rs$Estimated_wrong <- df.mi.rs$Estimated
+
+for (n in 1:40) {
+  w <- new[n]
+  df.mi.rs$Simulated[df.mi.rs$Simulated_wrong == w] <- n
+  df.mi.rs$Estimated[df.mi.rs$Estimated_wrong == w] <- n
+}
+
+# if (saveplots == 1) {tiff("R2R_output/Model_iden_bicp_rewsen.tiff", units="in", res = resolution, width = modplotW*2, height = plotH*2)}
+
+bicp.rs.plot <- ggplot(data = df.mi.rs, aes(x=Simulated, y=Estimated, fill=bicp)) + 
+  geom_tile() +
+  scale_fill_distiller(palette = "Purples", direction = 1,
+                       limit = c(0,100), 
+                       space = "Lab",       
+                       name="Percentage of simulated \nparticipants with lowest BIC") +
+  guides(fill = guide_colorbar(title.position = 'right', title.hjust = 0.5, 
+                               frame.colour = NULL, barheight = 16, 
+                               ticks.colour = 'black', ticks.linewidth = 0.5,  
+                               draw.ulim = FALSE, draw.llim = FALSE)) +
+  scale_x_continuous(breaks = seq(from = 2, to = 40, by = 2)) +
+  scale_y_continuous(breaks = seq(from = 2, to = 40, by = 2)) +
+  theme_classic() + 
+  theme(axis.text.x = element_markdown(size = (axtext-4)),
+        axis.text.y = element_markdown(size = (axtext-4)), 
+        axis.title = element_text(size = axtitle), 
+        legend.title = element_text(size = axtitle, angle = 90), 
+        legend.text = element_text(size = axtext))
+
+# bicp.rs.plot
+
+# if (saveplots == 1) {dev.off()}
+
+# if (saveplots == 1) {tiff("R2R_output/Model_iden_bes_rewsent.tiff", units="in", res = resolution, width = modplotW*2, height = plotH*2)}
+
+bm.rs.plot <- ggplot(data = df.mi.rs, aes(x=Simulated, y=Estimated, fill=best)) + 
+  geom_tile() +
+  scale_fill_distiller(palette = "Purples", direction = 1,
+                       limit = c(0,10), space = "Lab",                      
+                       name="Best model (lowest BIC)\nin 10 runs") +
+  guides(fill = guide_colorbar(title.position = 'right', title.hjust = 0.5, 
+                               frame.colour = NULL, barheight = 16, 
+                               ticks.colour = 'black', ticks.linewidth = 0.5,  
+                               draw.ulim = FALSE, draw.llim = FALSE)) +
+  scale_x_continuous(breaks = seq(from = 2, to = 40, by = 2)) +
+  scale_y_continuous(breaks = seq(from = 2, to = 40, by = 2)) +
+  theme_classic() + 
+  theme(axis.text.x = element_markdown(size = (axtext-4)),
+        axis.text.y = element_markdown(size = (axtext-4)), 
+        axis.title = element_text(size = axtitle), 
+        legend.title = element_text(size = axtitle, angle = 90), 
+        legend.text = element_text(size = axtext))
+
+# bm.rs.plot
 
 # if (saveplots == 1) {dev.off()}
 
@@ -718,8 +1153,10 @@ plot.effort.force <- ggplot(d.tbt.f, aes(x = Effort.r, y = Force_norm, group = R
   stat_smooth(alpha = 0.3, size = 0.2, show.legend = FALSE, formula = y ~ x, method = "lm") +
   stat_smooth(alpha = 0, size = 0.2, formula = y ~ x, method = "lm") +
   xlab('Effort level') + 
-  ylab("Force exerted<br>
-        <span style='font-size:14pt'>(normalised AUC)</span>") + 
+  scale_y_continuous(limits = c(0,1), name = "Force exerted<br>
+        <span style='font-size:14pt'>(normalised AUC)</span>") +
+  # ylab("Force exerted<br>
+  #       <span style='font-size:14pt'>(normalised AUC)</span>") + 
   theme_classic() + 
   scale_color_manual(values = otherselfcols) + 
   scale_fill_manual(values = otherselfdots) +
@@ -750,8 +1187,10 @@ plot.reward.force <- ggplot(d.tbt.f, aes(x = Reward.r, y = Force_norm, group = R
   stat_smooth(alpha = 0.3, size = 0.2, show.legend = FALSE, formula = y ~ x, method = "lm") +
   stat_smooth(alpha = 0, size = 0.22, formula = y ~ x, method = "lm") +
   xlab('Reward level') + 
-  ylab("Force exerted<br>
-        <span style='font-size:14pt'>(normalised AUC)</span>") + 
+  scale_y_continuous(limits = c(0,1), name = "Force exerted<br>
+        <span style='font-size:14pt'>(normalised AUC)</span>") +
+  # ylab("Force exerted<br>
+  # <span style='font-size:14pt'>(normalised AUC)</span>") + 
   theme_classic() + 
   scale_color_manual(values = otherselfcols) +
   scale_fill_manual(values = otherselfdots) +
@@ -770,90 +1209,44 @@ plot.reward.force <- ggplot(d.tbt.f, aes(x = Reward.r, y = Force_norm, group = R
 
 ## Figure 2
 
-```{r, warning=FALSE, message=FALSE, echo=FALSE, fig.height=corrplotW*2, fig.width=corrplotW*1.5}
+```{r, warning=FALSE, message=FALSE, echo=FALSE, fig.height=corrplotW*1.5, fig.width=corrplotW*1.5}
 
 # combine plots from above
 
 aligned <- align_plots(plot.effort.choice, plot.reward.choice, plot.rel.bic, h.plot, plot.effort.force, plot.reward.force, align = "hv", axis = "l")
 
-plot.fig2 <- plot_grid(ggdraw(aligned[[1]]), ggdraw(aligned[[2]]), ggdraw(aligned[[3]]), win.mod, ggdraw(aligned[[4]]), plot.k, ggdraw(aligned[[5]]), ggdraw(aligned[[6]]), nrow = 4, ncol = 2, label_size = axtitle, labels = "AUTO", axis = "l")
+plot.fig2 <- plot_grid(ggdraw(aligned[[1]]), ggdraw(aligned[[2]]), ggdraw(aligned[[3]]), win.mod, ggdraw(aligned[[4]]), plot.k, nrow = 3, ncol = 2, label_size = axtitle, labels = "AUTO", axis = "l")
 
 plot.fig2 <- ggdraw(plot.fig2) +
-  draw_plot(plot.prop.bic, .305, .67, .305, .67, hjust = 0.5, vjust = 0.5, width = 0.45, height = 0.45) +
-  draw_line(x = c(0.31, 0.34), y = c(0.60, 0.63), color = "#203964", size = 2) +
-  draw_line(x = c(0.41, 0.38), y = c(0.60, 0.63), color = "#7031A0", size = 2)
+  draw_plot(plot.prop.bic, x = .36, y = .57, hjust = 0.5, vjust = 0.5, width = 0.13, height = 0.13) +
+  draw_line(x = c(0.31, 0.34), y = c(0.49, 0.52), color = "#203964", size = 2) +
+  draw_line(x = c(0.41, 0.38), y = c(0.49, 0.52), color = "#7031A0", size = 2)
 
-if (saveplots == 1) {tiff("figures/Figure2.tiff", units="in", width = corrplotW*1.5, height = corrplotW*2, res = resolution)}
+if (saveplots == 1) {tiff("figures/Figure2.tiff", units="in", width = corrplotW*1.5, height = corrplotW*1.5, res = resolution)}
 
 plot.fig2
 
 if (saveplots == 1) {dev.off()}
 
-
 ```
 
-**Figure 2. Choice, force, and computational modelling of prosocial and
-self-benefitting decisions. (A)** Participants were less willing to
-accept the work offer over the rest offer as the effort level increased (GLMM odds ratio for effort 
-(OR)=`r format(round(r.choice$Coefficient[r.choice$Parameter == "Effort"],digits=2), nsmall=2)`,
-95% confidence interval=[`r format(round(r.choice$CI_low[r.choice$Parameter == "Effort"],digits=2), nsmall=2)`,
-`r format(round(r.choice$CI_high[r.choice$Parameter == "Effort"],digits=2), nsmall=2)`],
-*p*`r pvalr(r.choice$p[r.choice$Parameter == "Effort"])`).
-**(B)** The proportion of work offers
-accepted over the baseline option increased as reward increased 
-(reward OR=`r format(round(r.choice$Coefficient[r.choice$Parameter == "Reward"],digits=2), nsmall=2)` 
-[`r format(round(r.choice$CI_low[r.choice$Parameter == "Reward"],digits=2), nsmall=2)`,
-`r format(round(r.choice$CI_high[r.choice$Parameter == "Reward"],digits=2), nsmall=2)`],
-*p*`r pvalr(r.choice$p[r.choice$Parameter == "Reward"])`).
-Across effort and reward levels, participants were less willing to work when the other person would
-benefit than when they would benefit 
-(recipient OR=`r format(round(r.choice$Coefficient[r.choice$Parameter == "Recipient (Self vs. Other)"],digits=2), nsmall=2)` 
-[`r format(round(r.choice$CI_low[r.choice$Parameter == "Recipient (Self vs. Other)"],digits=2), nsmall=2)`,
-`r format(round(r.choice$CI_high[r.choice$Parameter == "Recipient (Self vs. Other)"],digits=2), nsmall=2)`],
-*p*`r pvalr(r.choice$p[r.choice$Parameter == "Recipient (Self vs. Other)"])`). 
-This tendency to work more for self than others was most pronounced at the higher reward levels 
-(recipient\*reward OR=`r format(round(r.choice$Coefficient[r.choice$Parameter == "Recipient (Self vs. Other) * Reward"],digits=2), nsmall=2)` 
-[`r format(round(r.choice$CI_low[r.choice$Parameter == "Recipient (Self vs. Other) * Reward"],digits=2), nsmall=2)`, 
-`r format(round(r.choice$CI_high[r.choice$Parameter == "Recipient (Self vs. Other) * Reward"],digits=2), nsmall=2)`],
-*p*`r pvalr(r.choice$p[r.choice$Parameter == "Recipient (Self vs. Other) * Reward"])`)
-and particularly when a high level of effort was required 
-(recipient\*effort\*reward OR=`r format(round(r.choice$Coefficient[r.choice$Parameter == "Recipient (Self vs. Other) * Effort * Reward"],digits=2), nsmall=2)` 
-[`r format(round(r.choice$CI_low[r.choice$Parameter == "Recipient (Self vs. Other) * Effort * Reward"],digits=2), nsmall=2)`, 
-`r format(round(r.choice$CI_high[r.choice$Parameter == "Recipient (Self vs. Other) * Effort * Reward"],digits=2), nsmall=2)`],
-*p*`r pvalr(r.choice$p[r.choice$Parameter == "Recipient (Self vs. Other) * Effort * Reward"])`). 
-Data are represented as mean ± SE. 
-**(C)** We compared a range of computational
-models and effort discounting that varied in terms of whether the model
-had a single or separate discount (`r "<i>\u039A</i>"`) parameter(s) for Self and Other trials (models 1-6 vs. models 7-12) and whether the shape of the discount function was parabolic (models 1, 4, 7,10) linear (models 2, 5, 8, 11) or hyperbolic (models 3, 6, 9, 12). Models 7 and 10 had the lowest Bayesian Information Criterion (BIC) scores. These were both parabolic and had separate `r "<i>\u039A</i>"` parameters for self and other. However, model 7 that contained a single choice stochasticity parameter (`r "<i>\u03B2</i>"`) explained behaviour in the majority of participants and was selected as the winning model. Bars show model BIC, proportions show the number of participants with the lowest BIC. 
-**(D)** Equation for the winning parabolic model with separate discount (`r "<i>\u039A</i>"`) parameters 
-and a single choice stochasticity (`r "<i>\u03B2</i>"`) parameter that
-explained behaviour in the majority of participants. **(E)** Parameter
-recovery using simulated data from the winning model and choice
-schedule showed excellent recovery of the model parameters. **(F)**
-Statistical comparison of the `r "<i>\u039A</i>"` parameters from the best fitting model
-showed that participants had a lower `r "<i>\u039A</i>"` parameter for self-benefitting
-compared to prosocial choices (Wilcoxon two-sided signed rank test 
-Z=`r format(round(Zstat.k,digits=2), nsmall=2)`,
-*r*<sub>(`r length(unique(d$ID))`)</sub>=`r format(round(wilcox.es.k$effsize[1],digits=2), nsmall=2)`,
-[`r format(round(wilcox.es.k$conf.low[1],digits=2), nsmall=2)`,
-`r format(round(wilcox.es.k$conf.high[1],digits=2), nsmall=2)`],
-*p*`r pvalr(wilcox.k[["p.value"]])`). 
-Data are represented as median ± SE, *** shows p<0.001 in Wilcoxon two-sided signed rank test. 
-**(G)** Force exerted (normalised areas under the curve during the effort period) for
-each of the levels of effort. Participants exerted less force for others overall
-(LMM effect of recipient `r "<i>\u03C7</i>"`<sup>2</sup><sub>(`r r.force$df[r.force$Parameter == "Recipient (Self vs. Other)"]`)</sub>=
-`r format(round(r.force$Chisq[r.force$Parameter == "Recipient (Self vs. Other)"],digits=2), nsmall=2)`,
-*p*`r pvalr(r.force$p[r.force$Parameter == "Recipient (Self vs. Other)"])`) and 
-there was a 3-way interaction between recipient, effort and reward. 
-**(H)** Force exerted for each reward level shows participants
-exerted more force for higher rewards
-(reward `r "<i>\u03C7</i>"`<sup>2</sup><sub>(`r r.force$df[r.force$Parameter == "Reward"]`)</sub>=
-`r format(round(r.force$Chisq[r.force$Parameter == "Reward"],digits=2), nsmall=2)`,
-*p*`r pvalr(r.force$p[r.force$Parameter == "Reward"])`)
-but this effect was reduced when the other person would benefit
-(recipient\*reward `r "<i>\u03C7</i>"`<sup>2</sup><sub>(`r r.force$df[r.force$Parameter == "Recipient (Self vs. Other) * Reward"]`)</sub>=
-`r format(round(r.force$Chisq[r.force$Parameter == "Recipient (Self vs. Other) * Reward"],digits=2), nsmall=2)`,
-*p*`r pvalr(r.force$p[r.force$Parameter == "Recipient (Self vs. Other) * Reward"])`).
+**Figure 2. Choices and computational modelling of prosocial and self-benefitting decisions.**
+
+## Figure 3
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE, fig.height=corrplotW*0.5, fig.width=corrplotW*1.5}
+
+# combine plots from above
+
+plot.fig3 <- plot_grid(ggdraw(aligned[[5]]), ggdraw(aligned[[6]]), ncol = 2, label_size = axtitle, labels = "AUTO", axis = "l")
+
+if (saveplots == 1) {tiff("figures/Figure3.tiff", units="in", width = corrplotW*1.5, height = corrplotW*0.5, res = resolution)}
+
+plot.fig3
+
+if (saveplots == 1) {dev.off()}
+```
+**Figure 3. Force exerted as a function of effort level and reward level for self and other.**
 
 ## RSA analysis
 
@@ -866,7 +1259,7 @@ ntrials  <- 50                                  # n of trials, each repeated 4x
 ntrialsSO <- 25
 session<-1                                      # number of sessions
 
-roi<-c('TPJ', 'ACCg', 'AI', 'dACC')              # names of ROIs
+roi<-c('TPJ', 'ACCg', 'AI', 'dACC', 'vmPFC', 'VS') # names of ROIs
 
 model_names <- c('selfOther', 'sV', 'eff', 'rew') # names of models    
 
@@ -1093,7 +1486,14 @@ p.kend <- bind_rows(ps.s, ps.o) %>%
   mutate(Recipient = factor(Recipient, 
                             levels = c('Other', 'Self'), 
                             labels = c('Other', 'Self'))) %>%
-  mutate(pvalFDR = p.adjust(pval, method = "fdr")) # correct p values
+  mutate(pvalFDR = NA) # correct p values
+
+# correct p values for 4 main ROIs
+p.kend$pvalFDR[p.kend$Area == "TPJ" | p.kend$Area == "ACCg" | p.kend$Area == "AI" | p.kend$Area == "dACC"] <- p.adjust(p.kend$pval[p.kend$Area == "TPJ" | p.kend$Area == "ACCg" | p.kend$Area == "AI" | p.kend$Area == "dACC"], method = "fdr")
+
+# correct p values for 2 supplementary ROIs
+p.kend$pvalFDR[p.kend$Area == "vmPFC" | p.kend$Area == "VS"] <- 
+  p.adjust(p.kend$pval[p.kend$Area == "vmPFC" | p.kend$Area == "VS"], method = "fdr")
 
 mean.sem.so <- left_join(mean.so, sem.so, by = c("Measure", "Recipient", "Area"))
 p.kend <- left_join(mean.sem.so, p.kend, by = c("Measure", "Recipient", "Area"))
@@ -1103,166 +1503,195 @@ p.diff <-
   drop_na() %>%
   rownames_to_column(var = "Measure") %>%
   pivot_longer(cols = !Measure, names_to = 'Area', values_to = 'pval') %>%
-  mutate(pvalFDR = p.adjust(pval, method = "fdr"))
+  mutate(pvalFDR = NA) %>% 
+  add_column("Contrast" = "Self vs. other", .before = "Measure")
+
+# correct p values for 4 main ROIs
+p.diff$pvalFDR[p.diff$Area == "TPJ" | p.diff$Area == "ACCg" | p.diff$Area == "AI" | p.diff$Area == "dACC"] <- p.adjust(p.diff$pval[p.diff$Area == "TPJ" | p.diff$Area == "ACCg" | p.diff$Area == "AI" | p.diff$Area == "dACC"], method = "fdr")
+
+# correct p values for 2 supplementary ROIs
+p.diff$pvalFDR[p.diff$Area == "vmPFC" | p.diff$Area == "VS"] <- 
+  p.adjust(p.diff$pval[p.diff$Area == "vmPFC" | p.diff$Area == "VS"], method = "fdr")
 
 # Wilcoxon signed-rank test on ACCg effort Kendall's tau for self and other
 
 wilcox.es.accg.eff <- wilcox_effsize(d, ACCg_eff_RSA ~ Recipient, paired = T, ci = T)
 Zstat.accg.eff <- qnorm(p.diff$pval[p.diff$Measure == "eff" & p.diff$Area == "ACCg"]/2)
 
+d.rsa.corr <- d.wide %>% 
+  select(contains("RSA")) %>% 
+  select(contains("self_") | contains ("other_")) %>% 
+  select(!contains(c("selfOther", "midbrain", "VS", "vmPFC")))
+
+d.rsa.corr$otherself_ACCg_eff_RSA <- d.rsa.corr$other_ACCg_eff_RSA - d.rsa.corr$self_ACCg_eff_RSA
+
+rsa.corr <- corr.test(d.rsa.corr)
+rsa.corr.r <- rsa.corr[["r"]]
+rsa.corr.r[rsa.corr[["p"]] > 0.05] <- NA
+
+rsa.corr.r <- cbind(rownames(rsa.corr.r), data.frame(rsa.corr.r, row.names=NULL))
+
+write_csv(rsa.corr.r, file = "data/RSA_correlations_p0.05.csv", na = "")
+
+## "connectivity" analysis - correlations between ACCg other RDM & dACC / AI for other / self RDMs
+
+ps.self.accg <- array(NA, dim = c(1, 2), dimnames = list("connectivity", roi[3:4]))
+stats.self.accg <- array(NA, dim = c(1, 2), dimnames = list("connectivity", roi[3:4]))
+zs.self.accg <- array(NA, dim = c(1, 2), dimnames = list("connectivity", roi[3:4]))
+mean.self.accg <- array(NA, dim = c(1, 2), dimnames = list("connectivity", roi[3:4]))
+sem.self.accg <- array(NA, dim = c(1, 2), dimnames = list("connectivity", roi[3:4]))
+
+ps.other.accg <- array(NA, dim = c(1, 2), dimnames = list("connectivity", roi[3:4]))
+stats.other.accg <- array(NA, dim = c(1, 2), dimnames = list("connectivity", roi[3:4]))
+zs.other.accg <- array(NA, dim = c(1, 2), dimnames = list("connectivity", roi[3:4]))
+mean.other.accg <- array(NA, dim = c(1, 2), dimnames = list("connectivity", roi[3:4]))
+sem.other.accg <- array(NA, dim = c(1, 2), dimnames = list("connectivity", roi[3:4]))
+
+ps.comp.accg <- array(NA, dim = c(1, 2), dimnames = list("connectivity", roi[3:4]))
+stats.comp.accg <- array(NA, dim = c(1, 2), dimnames = list("connectivity", roi[3:4]))
+zs.comp.accg <- array(NA, dim = c(1, 2), dimnames = list("connectivity", roi[3:4]))
+
+rs.self.accg <- vector(mode='list', length=2)
+rs.other.accg <- vector(mode='list', length=2)
+wilcox.es.accg <- data.frame()
+
+if (roi[2] == "ACCg" & roi[3] == "AI" & roi[4] == "dACC"){ # make sure indexes assumed below are right
+  
+  for (region in 3:4){
+    
+    rs.self.accg[[region-2]] <- array(0, dim = c(nSubs,1))
+    rs.other.accg[[region-2]] <- array(0, dim = c(nSubs,1))
+    
+    for (s in 1:nSubs){
+      brainvecOtherACCg  <- squareform(brainRDMother[[2]][[s]][[1]])
+      brainvecSelf[[region-2]]   <- squareform(brainRDMself[[region]][[s]][[1]])
+      brainvecOther[[region-2]]  <- squareform(brainRDMother[[region]][[s]][[1]])
+      rs.self.accg[[region-2]][s,1] <- KTA(brainvecOtherACCg, brainvecSelf[[region-2]])
+      rs.other.accg[[region-2]][s,1] <- KTA(brainvecOtherACCg, brainvecOther[[region-2]]) 
+    }
+    
+    RSA <- c(rs.self.accg[[region-2]], rs.other.accg[[region-2]])
+    Recipient <- c(rep(1,length(rs.self.accg[[region-2]])), rep(2,length(rs.other.accg[[region-2]]))) 
+    d.accg <- data.frame(RSA, Recipient) %>% 
+      mutate(Recipient = as.factor(Recipient))
+    
+    # Wilcoxon one-sided signed rank test of Kendall's tau for self > 0
+    wil.self.accg <- wilcox.test(rs.self.accg[[region-2]][,1], alternative = "g")
+    ps.self.accg[[1,region-2]] <- wil.self.accg$p.value
+    stats.self.accg[[1,region-2]] <- wil.self.accg$statistic
+    zs.self.accg[[1,region-2]] <- qnorm(wil.self.accg$p.value/2)
+    mean.self.accg[[1,region-2]] <- mean(rs.self.accg[[region-2]][,1])
+    sem.self.accg[[1,region-2]] <- std_err(rs.self.accg[[region-2]][,1])
+    # Wilcoxon one-sided signed rank test of Kendall's tau for other > 0
+    wil.other.accg <- wilcox.test(rs.other.accg[[region-2]][,1], alternative = "g")
+    ps.other.accg[[1,region-2]] <- wil.other.accg$p.value
+    stats.other.accg[[1,region-2]] <- wil.other.accg$statistic
+    zs.other.accg[[1,region-2]] <- qnorm(wil.other.accg$p.value/2)
+    mean.other.accg[[1,region-2]] <- mean(rs.other.accg[[region-2]][,1])
+    sem.other.accg[[1,region-2]] <- std_err(rs.other.accg[[region-2]][,1])
+    # Wilcoxon two-sided signed rank test between self and other RDM correlations
+    wil.comp.accg <- wilcox.test(rs.self.accg[[region-2]][,1], rs.other.accg[[region-2]][,1], paired = T)
+    ps.comp.accg[[1,region-2]] <- wil.comp.accg$p.value
+    stats.comp.accg[[1,region-2]] <- wil.comp.accg$statistic
+    zs.comp.accg[[1,region-2]] <- qnorm(wil.comp.accg$p.value/2)
+    wil.es.accg <- wilcox_effsize(d.accg, RSA ~ Recipient, paired = T, ci = T)
+    wil.es.accg$Area <- roi[region]
+    wilcox.es.accg <- bind_rows(wilcox.es.accg, wil.es.accg)
+  }
+  
+}
+
+## effort vs. reward analysis - comparison between effort and reward RDMs in vmPFC / VS for self / other
+
+ps.self.reweff.comp <- array(NA, dim = c(1, 2), dimnames = list("effrew", roi[5:6]))
+stats.self.reweff.comp <- array(NA, dim = c(1, 2), dimnames = list("effrew", roi[5:6]))
+zs.self.reweff.comp <- array(NA, dim = c(1, 2), dimnames = list("effrew", roi[5:6]))
+
+ps.other.reweff.comp <- array(NA, dim = c(1, 2), dimnames = list("effrew", roi[5:6]))
+stats.other.reweff.comp <- array(NA, dim = c(1, 2), dimnames = list("effrew", roi[5:6]))
+zs.other.reweff.comp <- array(NA, dim = c(1, 2), dimnames = list("effrew", roi[5:6]))
+
+wilcox.es.self.reweff <- data.frame()
+wilcox.es.other.reweff <- data.frame()
+
+if (roi[5] == "vmPFC" & roi[6] == "VS" & model_names[3] == "eff" & model_names[4] == "rew"){ # make sure indexes assumed below are right
+  
+  for (region in 5:6){
+    
+    # Wilcoxon two-sided signed rank test between effort and reward RDM correlations for self and other
+    wil.self.reweff.comp <- wilcox.test(rs.roi.self[[region]][,3], rs.roi.self[[region]][,4], paired = T)
+    ps.self.reweff.comp[1,region-4] <- wil.self.reweff.comp$p.value
+    stats.self.reweff.comp[1,region-4] <- wil.self.reweff.comp$statistic
+    zs.self.reweff.comp[1,region-4] <- qnorm(wil.self.reweff.comp$p.value/2)
+    
+    RSA.self <- c(rs.roi.self[[region]][,3], rs.roi.self[[region]][,4])
+    Measure <- c(rep(3,length(rs.roi.self[[region]][,3])), rep(4,length(rs.roi.self[[region]][,4]))) 
+    d.self.reweff <- data.frame(RSA.self, Measure) %>% 
+      mutate(Measure = as.factor(Measure))
+    
+    wil.es.self.reweff <- wilcox_effsize(d.self.reweff, RSA.self ~ Measure, paired = T, ci = T)
+    wil.es.self.reweff$Area <- roi[region]
+    wilcox.es.self.reweff <- bind_rows(wilcox.es.self.reweff, wil.es.self.reweff)
+    
+    wil.other.reweff.comp <- wilcox.test(rs.roi.other[[region]][,3], rs.roi.other[[region]][,4], paired = T)
+    ps.other.reweff.comp[1,region-4] <- wil.other.reweff.comp$p.value
+    stats.other.reweff.comp[1,region-4] <- wil.other.reweff.comp$statistic
+    zs.other.reweff.comp[1,region-4] <- qnorm(wil.other.reweff.comp$p.value/2)
+    
+    RSA.other <- c(rs.roi.other[[region]][,3], rs.roi.other[[region]][,4])
+    Measure <- c(rep(3,length(rs.roi.other[[region]][,3])), rep(4,length(rs.roi.other[[region]][,4]))) 
+    d.other.reweff <- data.frame(RSA.other, Measure) %>% 
+      mutate(Measure = as.factor(Measure))
+    
+    wil.es.other.reweff <- wilcox_effsize(d.other.reweff, RSA.other ~ Measure, paired = T, ci = T)
+    wil.es.other.reweff$Area <- roi[region]
+    wilcox.es.other.reweff <- bind_rows(wilcox.es.other.reweff, wil.es.other.reweff)
+    
+  }
+  
+}
+
+p.self.diff <-
+  as.data.frame(ps.self.reweff.comp) %>%
+  drop_na() %>%
+  mutate("Measure" = "self") %>%
+  pivot_longer(cols = !Measure, names_to = 'Area', values_to = 'pval') %>%
+  add_column("Contrast" = "Reward vs. effort", .before = "Measure")
+
+z.self.diff <-
+  as.data.frame(zs.self.reweff.comp) %>%
+  drop_na() %>%
+  mutate("Measure" = "self") %>%
+  pivot_longer(cols = !Measure, names_to = 'Area', values_to = 'Z') %>%
+  add_column("Contrast" = "Reward vs. effort", .before = "Measure")
+
+wilcox.es.self.reweff <- wilcox.es.self.reweff %>% 
+    mutate("Measure" = "self") %>%
+  add_column("Contrast" = "Reward vs. effort", .before = "Measure")
+
+p.other.diff <-
+  as.data.frame(ps.other.reweff.comp) %>%
+  drop_na() %>%
+  mutate("Measure" = "other") %>%
+  pivot_longer(cols = !Measure, names_to = 'Area', values_to = 'pval') %>%
+  add_column("Contrast" = "Reward vs. effort", .before = "Measure")
+
+z.other.diff <-
+  as.data.frame(zs.other.reweff.comp) %>%
+  drop_na() %>%
+  mutate("Measure" = "other") %>%
+  pivot_longer(cols = !Measure, names_to = 'Area', values_to = 'Z') %>%
+  add_column("Contrast" = "Reward vs. effort", .before = "Measure")
+
+wilcox.es.other.reweff <- wilcox.es.other.reweff %>% 
+    mutate("Measure" = "other") %>%
+  add_column("Contrast" = "Reward vs. effort", .before = "Measure")
+
+p.reweff.diff <- left_join(bind_rows(z.self.diff, z.other.diff), bind_rows(wilcox.es.self.reweff, wilcox.es.other.reweff) %>% select("Contrast", "Measure", "Area", "effsize", "conf.low", "conf.high"))
+
+p.reweff.diff <- left_join(p.reweff.diff, bind_rows(p.self.diff, p.other.diff))
+
 ```
-
-Multivariate patterns in all of our four ROIs showed significant
-correlations with the other-effort RDM when making prosocial choices
-(other-effort mean rank correlation `r "\u03C4"`<sub>A</sub> ± SE: ACCg
-=
-`r format(round(mean(d.wide$other_ACCg_eff_RSA), digits = 3), nsmall = 3)`
-±
-`r format(round(standard_error(d.wide$other_ACCg_eff_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "eff" & p.kend$Recipient == "Other" & p.kend$Area == "ACCg"])`;
-TPJ =
-`r format(round(mean(d.wide$other_TPJ_eff_RSA), digits = 3), nsmall = 3)`
-±
-`r format(round(standard_error(d.wide$other_TPJ_eff_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "eff" & p.kend$Recipient == "Other" & p.kend$Area == "TPJ"])`;
-AI =
-`r format(round(mean(d.wide$other_AI_eff_RSA), digits = 3), nsmall = 3)`
-±
-`r format(round(standard_error(d.wide$other_AI_eff_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "eff" & p.kend$Recipient == "Other" & p.kend$Area == "AI"])`;
-dACC/dmPFC =
-`r format(round(mean(d.wide$other_dACC_eff_RSA), digits = 3), nsmall = 3)`
-±
-`r format(round(standard_error(d.wide$other_dACC_eff_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "eff" & p.kend$Recipient == "Other" & p.kend$Area == "dACC"])`,
-surviving FDR correction for 24 comparisons (6 models, 4 brain areas, 2
-recipients)). In contrast for self-effort patterns, only the TPJ brain
-RDM significantly correlated with the effort model RDM (self-effort mean
-rank correlation `r "\u03C4"`<sub>A</sub> ± SE: ACCg =
-`r format(round(mean(d.wide$self_ACCg_eff_RSA), digits = 3), nsmall = 3)`
-±
-`r format(round(standard_error(d.wide$self_ACCg_eff_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "eff" & p.kend$Recipient == "Self" & p.kend$Area == "ACCg"])`;
-TPJ =
-`r format(round(mean(d.wide$self_TPJ_eff_RSA), digits = 3), nsmall = 3)`
-±
-`r format(round(standard_error(d.wide$self_TPJ_eff_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "eff" & p.kend$Recipient == "Self" & p.kend$Area == "TPJ"])`;
-AI =
-`r format(round(mean(d.wide$self_AI_eff_RSA), digits = 3), nsmall = 3)`
-±
-`r format(round(standard_error(d.wide$self_AI_eff_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "eff" & p.kend$Recipient == "Self" & p.kend$Area == "AI"])`;
-dACC/dmPFC =
-`r format(round(mean(d.wide$self_dACC_eff_RSA), digits = 3), nsmall = 3)`
-±
-`r format(round(standard_error(d.wide$self_dACC_eff_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "eff" & p.kend$Recipient == "Self" & p.kend$Area == "dACC"])`).
-Critically, although TPJ, AI and dACC/dmPFC also represented prosocial
-effort, they did not do so more strongly than for the self-effort RDMs
-(Wilcoxon two-sided signed rank test, all
-*p*s\>`r round(min(p.diff$pval[p.diff$Measure == "eff" & p.diff$Area != "ACCg"]), digits = 2)`).
-In contrast, the ACCg ROI carried a multivariate representation of
-effort on prosocial trials only, being the only ROI to display a
-significant difference between the other-effort and self-effort RDMs
-(Wilcoxon two-sided signed rank test
-Z=`r format(round(Zstat.accg.eff,digits=2), nsmall=2)`,
-*r*<sub>(`r length(unique(d$ID))`)</sub>=`r format(round(wilcox.es.accg.eff$effsize[1],digits=2), nsmall=2)`,
-[`r format(round(wilcox.es.accg.eff$conf.low[1],digits=2), nsmall=2)`,
-`r format(round(wilcox.es.accg.eff$conf.high[1],digits=2), nsmall=2)`],
-*p*`r pvalr(p.diff$pval[p.diff$Measure == "eff" & p.diff$Area == "ACCg"])`,
-Figure 3a). Notably the specificity for others effort was not due to
-overall activation differences for other and self representations, as
-ACCg was the only ROI that represented other and self offers as equally
-dissimilar (see Methods, Bayesian paired sample t-test BF01=4.61,
-substantial evidence in support of the null). Moreover, whilst patterns
-in several regions significantly correlated with the other-reward RDM
-(other-reward mean rank correlation `r "\u03C4"`<sub>A</sub> ± SE: ACCg
-=
-`r format(round(mean(d.wide$other_ACCg_rew_RSA), digits = 3), nsmall = 3)`
-±
-`r format(round(standard_error(d.wide$other_ACCg_rew_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "rew" & p.kend$Recipient == "Other" & p.kend$Area == "ACCg"])`;
-TPJ =
-`r format(round(mean(d.wide$other_TPJ_rew_RSA), digits = 3), nsmall = 3)`
-±
-`r format(round(standard_error(d.wide$other_TPJ_rew_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "rew" & p.kend$Recipient == "Other" & p.kend$Area == "TPJ"])`;
-AI =
-`r format(round(mean(d.wide$other_AI_rew_RSA), digits = 3), nsmall = 3)`
-±
-`r format(round(standard_error(d.wide$other_AI_rew_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "rew" & p.kend$Recipient == "Other" & p.kend$Area == "AI"])`;
-dACC/dmPFC =
-`r format(round(mean(d.wide$other_dACC_rew_RSA), digits = 3), nsmall = 3)`
-±
-`r format(round(standard_error(d.wide$other_dACC_rew_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "rew" & p.kend$Recipient == "Other" & p.kend$Area == "dACC"])`),
-no region significantly represented others' rewards more strongly than
-self-rewards (Table S3). Thus, multivariate patterns in
-the ACCg represented effort costs specifically when making prosocial but
-not self-benefitting choices (see Table S4 for exploratory whole-brain
-searchlight results).
-
-<br><br>
-
-None of our ROIs showed a significantly
-stronger correlation of the self-effort than other-effort RDM, nor for
-the self-SV rather than other-SV RDM (all zvals= \<1.37 \|\| \>1.56, all
-p's\>0.12, see Table S3 for reward RDM results).
-
-<br><br>
-
-We found significant correlations between the self-SV and other-SV RDMs
-in both the dACC/dmPFC and AI (self-SV mean rank correlation
-`r "\u03C4"`<sub>A</sub> ± SE: dACC/dmPFC =
-`r format(round(mean(d.wide$self_dACC_sV_RSA), digits = 3), nsmall = 3)`
-±
-`r format(round(standard_error(d.wide$self_dACC_sV_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "sV" & p.kend$Recipient == "Self" & p.kend$Area == "dACC"])`;
-AI =
-`r format(round(mean(d.wide$self_AI_sV_RSA), digits = 3), nsmall = 3)` ±
-`r format(round(standard_error(d.wide$self_AI_sV_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "sV" & p.kend$Recipient == "Self" & p.kend$Area == "AI"])`;
-other-SV mean rank correlation `r "\u03C4"`<sub>A</sub> ± SE: dACC/dmPFC
-=
-`r format(round(mean(d.wide$other_dACC_sV_RSA), digits = 3), nsmall = 3)`
-±
-`r format(round(standard_error(d.wide$other_dACC_sV_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "sV" & p.kend$Recipient == "Other" & p.kend$Area == "dACC"])`;
-AI =
-`r format(round(mean(d.wide$other_AI_sV_RSA), digits = 3), nsmall = 3)`
-±
-`r format(round(standard_error(d.wide$other_AI_sV_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "sV" & p.kend$Recipient == "Other" & p.kend$Area == "AI"])`;
-all survive FDR correction, Figure 4c). 
-
-<br><br> 
-
-Outside of dACC/dmPFC
-and AI, we found multivariate patterns of subjective value that
-overlapped between self and other in TPJ and ACCg self-SV mean rank
-correlation `r "\u03C4"`<sub>A</sub> ± SE: TPJ =
-`r format(round(mean(d.wide$self_TPJ_sV_RSA), digits = 3), nsmall = 3)`
-±
-`r format(round(standard_error(d.wide$self_TPJ_sV_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "sV" & p.kend$Recipient == "Self" & p.kend$Area == "TPJ"])`;
-ACCg =
-`r format(round(mean(d.wide$self_ACCg_sV_RSA), digits = 3), nsmall = 3)`
-±
-`r format(round(standard_error(d.wide$self_ACCg_sV_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "sV" & p.kend$Recipient == "Self" & p.kend$Area == "ACCg"])`;
-other-SV mean rank correlation `r "\u03C4"`<sub>A</sub> ± SE: TPJ =
-`r format(round(mean(d.wide$other_TPJ_sV_RSA), digits = 3), nsmall = 3)`
-±
-`r format(round(standard_error(d.wide$other_TPJ_sV_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "sV" & p.kend$Recipient == "Other" & p.kend$Area == "TPJ"])`;
-ACCg =
-`r format(round(mean(d.wide$other_ACCg_sV_RSA), digits = 3), nsmall = 3)`
-±
-`r format(round(standard_error(d.wide$other_ACCg_sV_RSA), digits = 3), nsmall = 3)`,
-*p*`r pvalr(p.kend$pval[p.kend$Measure == "sV" & p.kend$Recipient == "Other" & p.kend$Area == "ACCg"])`;
-all survive FDR correction).
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE, fig.height=plotH, fig.width=plotW}
 
@@ -1305,28 +1734,28 @@ mid.diff.t <- t.test(d.rsa$value[d.rsa$Area == "midbrain" & d.rsa$Recipient == "
                      d.rsa$value[d.rsa$Area == "midbrain" & d.rsa$Recipient == "Self"], paired = TRUE)
 
 stars <- p.kend %>% 
-  add_row(Recipient = "Self", Measure = "sV", Area = "midbrain", pval = mid.self.t$p.value, pvalFDR = NA) %>% 
-  add_row(Recipient = "Other", Measure = "sV", Area = "midbrain", pval = mid.other.t$p.value, pvalFDR = NA) %>% 
+  add_row(Recipient = "Self", Measure = "sV", Area = "midbrain", pval = mid.self.t$p.value, pvalFDR = p.adjust(c(mid.self.t$p.value, mid.other.t$p.value), method = "fdr")[1]) %>% 
+  add_row(Recipient = "Other", Measure = "sV", Area = "midbrain", pval = mid.other.t$p.value, pvalFDR = p.adjust(c(mid.self.t$p.value, mid.other.t$p.value), method = "fdr")[2]) %>% 
   mutate(Measure = factor(Measure, levels = c('eff', 'rew', 'sV'), labels = c('Effort', 'Reward', 'SV'))) %>% 
   mutate(Recipient = factor(Recipient)) %>% 
   mutate(label = "") %>% 
   mutate(value = NA)
 
-stars$label[stars$pval < 0.05] <- "*"
-stars$label[stars$pval < 0.01] <- "**"
-stars$label[stars$pval < 0.001] <- "***"
+stars$label[stars$pvalFDR < 0.05] <- "*"
+stars$label[stars$pvalFDR < 0.01] <- "**"
+stars$label[stars$pvalFDR < 0.001] <- "***"
 
 stars$value[stars$Measure == "Effort" & stars$pvalFDR < 0.05] <- 0.12
 stars$value[stars$Measure == "SV" & stars$pvalFDR < 0.05] <- 0.2
 
 stars.diff <- p.diff %>% 
-  add_row(Measure = "sV", Area = "midbrain", pval = mid.diff.t$p.value, pvalFDR = NA) %>% 
+  add_row(Measure = "sV", Area = "midbrain", pval = mid.diff.t$p.value, pvalFDR = mid.diff.t$p.value) %>% 
   mutate(Measure = factor(Measure, levels = c('eff', 'rew', 'sV'), labels = c('Effort', 'Reward', 'SV'))) %>% 
   mutate(label = "")
 
-stars.diff$label[stars.diff$pval < 0.05] <- "*"
-stars.diff$label[stars.diff$pval < 0.01] <- "**"
-stars.diff$label[stars.diff$pval < 0.001] <- "***"
+stars.diff$label[stars.diff$pvalFDR < 0.05] <- "*"
+stars.diff$label[stars.diff$pvalFDR < 0.01] <- "**"
+stars.diff$label[stars.diff$pvalFDR < 0.001] <- "***"
 
 for (p in 1:nrow(toplot)){
   
@@ -1367,7 +1796,7 @@ for (p in 1:nrow(toplot)){
               position = position_dodge(0.5), 
               colour = 'black', size = 5) 
   
-  if (stars.diff.plot$pval < 0.05){
+  if (stars.diff.plot$pvalFDR < 0.05){
     
     plot.rsa <- plot.rsa +
       geom_signif(comparisons = list(c("Other", "Self")), map_signif_level = FALSE, colour = "black", 
@@ -1479,48 +1908,87 @@ for (p in 1:length(toplot.univ)){
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE}
 
-# correlation between other_ACCg_eff_RSA and QCAE AE
-
-o.accg.ae.corr <- cor.test(d.wide$other_ACCg_eff_RSA, d.wide$QCAE_AE)
-
-# correlation between other_ACCg_eff_RSA and QCAE CE
-
-o.accg.ce.corr <- cor.test(d.wide$other_ACCg_eff_RSA, d.wide$QCAE_CE)
-
 # correlation between QCAE AE and QCAE CE
 
 o.ae.ce.corr <- cor.test(d.wide$QCAE_AE, d.wide$QCAE_CE)
+
+# correlation between other_ACCg_eff_RSA and QCAE
+
+o.accg.ae.corr <- cor.test(d.wide$other_ACCg_eff_RSA, d.wide$QCAE_AE)
+o.accg.ce.corr <- cor.test(d.wide$other_ACCg_eff_RSA, d.wide$QCAE_CE)
 
 # difference between correlations
 
 o.accg.corr.diff <- paired.r(o.accg.ae.corr[["estimate"]][["cor"]], o.accg.ce.corr[["estimate"]][["cor"]], o.ae.ce.corr[["estimate"]][["cor"]], n = length(!is.na(d.wide$QCAE_AE)), twotailed = F)
 
-# correlation between other_ACCg_eff_RSA and QCAE AE
+# correlation between other_ACCg_force and QCAE
 
 o.accg.ae.corr.f <- cor.test(d.wide$other_ACCg_force, d.wide$QCAE_AE)
-
-# correlation between other_ACCg_eff_RSA and QCAE CE
-
 o.accg.ce.corr.f <- cor.test(d.wide$other_ACCg_force, d.wide$QCAE_CE)
 
-```
+# correlations with average number of times work for other
 
-We found that affective empathy was positively correlated with the
-strength of prosocial effort patterns in ACCg
-(Pearson's *r*<sub>(`r length(!is.na(d.wide$QCAE_AE)-2)`)</sub>=
-`r format(round(o.accg.ae.corr[["estimate"]][["cor"]],digits=2), nsmall=2)`,
-*p*`r pvalr(o.accg.ae.corr[["p.value"]])`) whilst cognitive empathy was
-not (Pearson's *r*<sub>(`r length(!is.na(d.wide$QCAE_CE)-2)`)</sub>=
-`r format(round(o.accg.ce.corr[["estimate"]][["cor"]],digits=2), nsmall=2)`,
-*p*`r pvalr(o.accg.ce.corr[["p.value"]])`, correlations significantly
-different
-*t*=`r format(round(o.accg.corr.diff[["t"]],digits=2), nsmall=2)`,
-*p*=`r format(round(o.accg.corr.diff[["p"]],digits=2), nsmall=2)`). For
-the tracking of prosocial effort in ACCg during force exerted, neither
-affective or cognitive empathy were significantly correlated (all *r*s\>
-`r format(round(min(o.accg.ae.corr.f[["estimate"]][["cor"]], o.accg.ae.corr.f[["estimate"]][["cor"]]),digits=2), nsmall=2)`,
-all
-*p*s\>`r format(round(min(o.accg.ae.corr.f[["p.value"]], o.accg.ae.corr.f[["p.value"]]),digits=2), nsmall=2)`).
+d.choice <- read.csv('data/K_values_choices_PM_fmri_two_k_one_beta.csv') %>% 
+  rename("scanningID" = ID)
+
+d.choice$other_choice_minus_self_choice <- d.choice$other_choice - d.choice$self_choice
+
+mean.work.other <- round(mean(d.choice$other_choice),2)
+mean.work.self <- round(mean(d.choice$self_choice),2)
+
+rand.force <- ranef(m.force.rs[["full_model"]][[3]])
+rand.force <- rand.force[["ID"]]
+rand.force$ID <- unique(m.force.rs[["data"]][["ID"]])
+
+d.force <- d.tbt.f %>% 
+  dplyr::group_by(ID, Recipient) %>%
+  dplyr::summarise(av_force = mean(Force_norm, na.rm = T), .groups = "drop") %>%
+  pivot_wider(id_cols = "ID", names_from = "Recipient", values_from = "av_force", names_prefix = "av_force_")
+
+d.force <- left_join(d.force, rand.force, by = "ID")
+
+d.wide <- left_join(d.wide, d.choice %>% select("scanningID", contains("choice")), by = "scanningID")
+
+d.wide$ID <- c(1:38)
+d.wide$ID <- factor(d.wide$ID)
+
+d.choice <- d.tbt %>%
+  dplyr::group_by(ID, Recipient) %>%
+  dplyr::summarise(av_choice = mean(chosen, na.rm = T), .groups = "drop") %>%
+  pivot_wider(id_cols = "ID", names_from = "Recipient", values_from = "av_choice", names_prefix = "choice_")
+
+d.force <- left_join(d.force, d.choice, by = "ID") 
+d.wide <- left_join(d.wide, d.force, by = "ID")
+
+d.k.id <- d.k %>% select(!"ID")
+d.k.id <- left_join(d.k.id, d.wide %>% select("ID", "scanningID"), by = "scanningID")
+d.tbt <- left_join(d.tbt, d.k.id %>% select("ID", "scanningID", "k", "Recipient"), by = c("ID", "Recipient"))
+d.tbt$SV <- d.tbt$Reward.r - (d.tbt$k * ((d.tbt$Effort.r-1) ^ 2)) # add subjective value
+
+# correlation between other_ACCg_eff_RSA and other force
+
+o.accg.for.corr <- cor.test(d.wide$other_ACCg_eff_RSA, d.wide$av_force_Other)
+
+# correlation between other_ACCg_eff_RSA and other choice
+
+o.accg.choice.corr <- cor.test(d.wide$other_ACCg_eff_RSA, d.wide$choice_Other)
+
+# correlation between QCAE and other choice
+
+o.choice.ae.corr <- cor.test(d.wide$QCAE_AE, d.wide$other_choice)
+os.choice.ae.corr <- cor.test(d.wide$QCAE_AE, d.wide$other_choice_minus_self_choice)
+
+# correlation between QCAE and other force
+
+o.force.ae.corr <- cor.test(d.wide$QCAE_AE, d.wide$av_force_Other)
+o.force.ce.corr <- cor.test(d.wide$QCAE_CE, d.wide$av_force_Other)
+
+# difference between correlations
+
+o.force.corr.diff <- paired.r(o.force.ae.corr[["estimate"]][["cor"]], o.force.ce.corr[["estimate"]][["cor"]], o.ae.ce.corr[["estimate"]][["cor"]], n = length(!is.na(d.wide$QCAE_AE)), twotailed = F)
+
+
+```
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE, fig.height=plotH, fig.width=plotW*1.5}
 
@@ -1535,7 +2003,7 @@ plot.qcae.ae <- ggplot(d.wide, aes(x = other_ACCg_eff_RSA, y = QCAE_AE)) +
   scale_x_continuous(n.breaks = 6, name = paste0(taulabel), limits = c(-0.05, 0.15)) +
   scale_y_continuous(name = "QCAE<br>
         <span style='font-size:12pt'>(Affective empathy subscale)</span>") + 
-  ggtitle("ACCg pattern and\naffective empathy") +
+  ggtitle("ACCg other effort pattern and\naffective empathy") +
   theme_classic() + 
   theme(legend.position = 'none') +
   theme(axis.text = element_markdown(size = axtext),
@@ -1553,9 +2021,60 @@ plot.qcae.ae <- ggplot(d.wide, aes(x = other_ACCg_eff_RSA, y = QCAE_AE)) +
 
 # if (saveplots == 1) {dev.off()}
 
+# if (saveplots == 1) {tiff("plotpanels/other_ACCg_effort_RSA_other_force.tiff", units="in", width = plotW*1.5, height = plotH, res = resolution)}
+
+plot.accg.rsa.for <- ggplot(d.wide, aes(x = other_ACCg_eff_RSA, y = av_force_Other)) + 
+  geom_point(alpha = 0.7, size = 5, show.legend = FALSE, colour = "#326199") + 
+  geom_smooth(method = 'lm', alpha = 0.3, size = 2, colour = "#326199", fill = "#326199", show.legend = FALSE) + 
+  geom_smooth(method = 'lm', alpha = 0, size = 2, colour = "#326199") +
+  scale_x_continuous(n.breaks = 6, name = paste0(taulabel)) +
+  scale_y_continuous(name = "Average force for other") + 
+  ggtitle("ACCg other effort pattern during\nchoice and force exerted for other") +
+  theme_classic() + 
+  theme(legend.position = 'none') +
+  theme(axis.text = element_markdown(size = axtext-4),
+        axis.title.x = element_markdown(size = axtitle-4),
+        axis.title.y = element_markdown(size = axtitle-4),
+        plot.title = element_text(size = axtitle-4, hjust = 0.5)) +
+  annotate(geom='richtext', x = 0.1, y = 0.42, 
+           label = paste0("_r_","<sub>(", (length(!is.na(d.wide$av_force_Other))-2),")</sub>=", 
+                          format(round(o.accg.for.corr[["estimate"]][["cor"]],digits=2), nsmall=2),", _p_", 
+                          pvalr(o.accg.for.corr[["p.value"]])),
+           fill = NA, label.color = NA, size = 4)
+
+# plot.accg.rsa.for
+
+# if (saveplots == 1) {dev.off()}
+
+# if (saveplots == 1) {tiff("plotpanels/other_ACCg_effort_RSA_other_force.tiff", units="in", width = plotW*1.5, height = plotH, res = resolution)}
+
+plot.accg.for.choice <- ggplot(d.wide, aes(x = other_ACCg_force, y = choice_Other)) + 
+  geom_point(alpha = 0.7, size = 5, show.legend = FALSE, colour = "#326199") + 
+  geom_smooth(method = 'lm', alpha = 0.3, size = 2, colour = "#326199", fill = "#326199", show.legend = FALSE) + 
+  geom_smooth(method = 'lm', alpha = 0, size = 2, colour = "#326199") +
+  scale_x_continuous(n.breaks = 6, name = paramestlab) +
+  scale_y_continuous(name = "Proportion accepted for other") + 
+  ggtitle("ACCg force for other (univariate)\nand choices to work for other") +
+  theme_classic() + 
+  theme(legend.position = 'none') +
+  theme(axis.text = element_markdown(size = axtext-4),
+        axis.title.x = element_markdown(size = axtitle-4),
+        axis.title.y = element_markdown(size = axtitle-4),
+        plot.title = element_text(size = axtitle-4, hjust = 0.5)) +
+  guides(shape = guide_legend(override.aes = list(size = 2))) +
+  annotate(geom='richtext', x = 1.2, y = 0.7, 
+           label = paste0("_r_","<sub>(", (length(!is.na(d.wide$other_ACCg_force))-2),")</sub>=", 
+                          format(round(o.accg.choice.corr[["estimate"]][["cor"]],digits=2), nsmall=2),", _p_", 
+                          pvalr(o.accg.choice.corr[["p.value"]])),
+           fill = NA, label.color = NA, size = 4)
+
+# plot.accg.for.choice
+
+# if (saveplots == 1) {dev.off()}
+
 ```
 
-## Figure 3
+## Figure 4
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE, fig.height=plotH*1.3, fig.width=corrplotW*1.75}
 
@@ -1579,61 +2098,38 @@ other.self.effort <- plot_grid(plot.Effort.ACCg, plot.qcae.ae, ncol = 2, rel_wid
 
 ACCg.force.task <- plot_grid(ACCg.force.brain, NULL, force.task, nrow = 3, rel_heights = c(3,0.5,2.3))
 
-f3a.title <- ggdraw() + 
+f4a.title <- ggdraw() + 
   draw_label(
     "Other effort pattern > Self effort pattern",
     x = 0.5, hjust = 0.5, size = 18) +
   theme(plot.background = element_rect(fill = NA, colour = NA))
 
-f3b.title <- ggdraw() + 
+f4b.title <- ggdraw() + 
   draw_label(
     "Other force > Self force",
     x = 0.5, hjust = 0.5, size = 18) +
   theme(plot.background = element_rect(fill = NA, colour = NA))
 
-fig3 <- plot_grid(NULL, plot.Effort.ACCg, plot.qcae.ae, NULL, plot.ACCg_force, NULL, ncol = 6, rel_widths = c(2.1,1.8,3.2,2.2,1.8,0.1), axis = "tb", align = "h")
+fig4 <- plot_grid(NULL, plot.Effort.ACCg, plot.qcae.ae, NULL, plot.ACCg_force, NULL, ncol = 6, rel_widths = c(2.1,1.8,3.2,2.2,1.8,0.1), axis = "tb", align = "h")
 
-fig3 <- ggdraw() +
-  draw_plot(fig3) +
+fig4 <- ggdraw() +
+  draw_plot(fig4) +
   draw_plot(ACCg.roi.effort.rdm, x = 0.1, y = 0.5, width = 0.7, height = 0.5, hjust = 0.5, vjust = 0.5) +
   draw_plot(ACCg.force.task, x = 0.75, y = 0.5, width = 0.7, height = 0.5, hjust = 0.5, vjust = 0.5)
 
-fig3titles <- plot_grid(f3a.title, f3b.title, ncol = 2, rel_widths = c(7.2, 3.8), labels = "AUTO", label_size = axtitle)
+fig4titles <- plot_grid(f4a.title, f4b.title, ncol = 2, rel_widths = c(7.2, 3.8), labels = "AUTO", label_size = axtitle)
 
-fig3 <- plot_grid(fig3titles, fig3, nrow = 2, rel_heights = c(0.1,1))
+fig4 <- plot_grid(fig4titles, fig4, nrow = 2, rel_heights = c(0.1,1))
 
-if (saveplots == 1) {tiff("figures/Figure3.tiff", units="in", width = corrplotW*1.75, height = plotH*1.3, res = resolution)}
+if (saveplots == 1) {tiff("figures/Figure4.tiff", units="in", width = corrplotW*1.75, height = plotH*1.3, res = resolution)}
 
-fig3
+fig4
 
 if (saveplots == 1) {dev.off()}
 
 ```
 
-**Figure 3. ACCg codes patterns of effort for others only, varies with
-level of affective empathy, and tracks force required to benefit others
-only. (A)** Across an independent structural ROI of the anterior
-cingulate gyrus (Neubert et al., 2014), representational dissimilarity
-patterns of effort were encoded specifically for others. Kendall's
-`r "\u03C4"`<sub>A</sub> shows a greater correlation between brain RDM
-and effort RDM during the offer period for other than self (Wilcoxon
-two-sided signed rank test
-Z=`r format(round(Zstat.accg.eff,digits=2), nsmall=2)`,
-*r*<sub>(`r length(unique(d$ID))`)</sub>=`r format(round(wilcox.es.accg.eff$effsize[1],digits=2), nsmall=2)`,
-[`r format(round(wilcox.es.accg.eff$conf.low[1],digits=2), nsmall=2)`,
-`r format(round(wilcox.es.accg.eff$conf.high[1],digits=2), nsmall=2)`],
-*p*`r pvalr(p.diff$pval[p.diff$Measure == "eff" & p.diff$Area == "ACCg"])`.
-ROI displayed on an anatomical scan of the medial surface. Variability
-in ACCg effort patterns for others was explained by individual
-difference in affective empathy, as measured by the Questionnaire for
-Cognitive and Affective Empathy (QCAE; Reniers et al., 2011). In contrast,
-there was no significant correlation with cognitive empathy and the two
-corelations were significantly different from one another (*t*=`r format(round(o.accg.corr.diff$t,digits=2), nsmall=2)`,
-*p*`r pvalr(o.accg.corr.diff$p)`). **(B)** A cluster in the ACCg tracked with the amount of force
-required during the force period specifically when making prosocial but
-not self-benefitting decisions (x=-6, y=24, z=20, Z=3.28, k=41,
-*p*\<0.05, FWE-SVC). Activation overlaid on an anatomical scan of the
-medial surface. \**p*\<0.05, \*\**p*\<0.01 \*\*\**p*\<0.001.
+**Figure 4. ACCg codes patterns of effort for others only, varies with level of affective empathy, and tracks effort required to benefit others only.**
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE, fig.height=plotH, fig.width=corrplotW}
 
@@ -1672,85 +2168,106 @@ self.other.univ <- plot_grid(self.other.univ.brain, plot.AI_SV_svc, nrow = 1, la
 
 ```
 
-## Figure 4
+## Figure 5
 
-```{r, warning=FALSE, message=FALSE, echo=FALSE, fig.height=plotH*2.6, fig.width=corrplotW*1.75}
+```{r, warning=FALSE, message=FALSE, echo=FALSE, fig.height=plotH*1.4, fig.width=corrplotW*1.75}
 
 # combine panels from above
 
-f4top.title <- ggdraw() + 
-  draw_label(
-    "Self > Other",
-    x = 0.5, hjust = 0.5, size = 18, angle = 90) +
-  theme(plot.background = element_rect(fill = NA, colour = NA))
+# f5top.title <- ggdraw() + 
+#   draw_label(
+#     "Self > Other",
+#     x = 0.5, hjust = 0.5, size = 18, angle = 90) +
+#   theme(plot.background = element_rect(fill = NA, colour = NA))
+# 
+# f5bottom.title <- ggdraw() + 
+#   draw_label(
+#     "Other ^ Self",
+#     x = 0.5, hjust = 0.5, size = 18, angle = 90) +
+#   theme(plot.background = element_rect(fill = NA, colour = NA))
 
-f4bottom.title <- ggdraw() + 
+f5left.title <- ggdraw() + 
   draw_label(
-    "Other ^ Self",
-    x = 0.5, hjust = 0.5, size = 18, angle = 90) +
-  theme(plot.background = element_rect(fill = NA, colour = NA))
-
-f4left.title <- ggdraw() + 
-  draw_label(
-    "Multivariate subjective value pattern",
+    "Multivariate subjective value pattern for Self > Other",
     x = 0.5, hjust = 0.5, size = 18, fontface = "bold") +
   theme(plot.background = element_rect(fill = NA, colour = NA))
 
-f4right.title <- ggdraw() + 
+f5right.title <- ggdraw() + 
   draw_label(
-    "Univariate subjective value tracking",
+    "Univariate subjective value tracking for Self > Other",
     x = 0.5, hjust = 0.5, size = 18, fontface = "bold") +
   theme(plot.background = element_rect(fill = NA, colour = NA))
 
-fig4 <- plot_grid(NULL, NULL, plot.SV.midbrain, NULL, NULL, plot.AI_SV_svc, NULL, 
-                  NULL, plot.SV.dACC, plot.SV.AI, NULL, NULL, plot.dacc_dmpfc_svc_conj, plot.AI_conj_SVC, 
-                  ncol = 7, nrow = 2, axis = "tblr", align = "hv", rel_widths = c(1,1,1,0.25,1,1,1),
-                  labels = c("A", "", "", "", "B", "", "",
-                             "C", "", "", "", "D", "", ""), label_size = axtitle)
+# fig5labels <- plot_grid(f5top.title, f5bottom.title, nrow = 2)
 
-fig4 <- ggdraw() +
-  draw_plot(fig4) +
-  draw_plot(SV.rdm, x = 0.06, y = 0.72, width = 0.10, height = 0.10, hjust = 0.5, vjust = 0.5) +
-  draw_plot(self.other.RSA.brain, x = 0.24, y = 0.72, width = 0.25, height = 0.25, hjust = 0.58, vjust = 0.5) +
-  draw_plot(self.other.univ.brain, x = 0.60, y = 0.72, width = 0.25, height = 0.25, hjust = 0.5, vjust = 0.5) +
-  draw_plot(dACC.AI.SV.RSA.brain, x = 0.08, y = 0.22, width = 0.25, height = 0.25, hjust = 0.5, vjust = 0.5) +
-  draw_plot(dACC.AI.SV.univ.brain, x = 0.60, y = 0.22, width = 0.25, height = 0.25, hjust = 0.5, vjust = 0.5) +
+fig5titles <- plot_grid(f5left.title, f5right.title, ncol = 2)
+
+fig5 <- plot_grid(NULL, NULL, plot.SV.midbrain, NULL, NULL, plot.AI_SV_svc, NULL, 
+                  ncol = 7, nrow = 1, axis = "tblr", align = "hv", rel_widths = c(1,1,1,0.25,1.5,1,0.5),
+                  labels = c("A", "", "", "", "B", "", ""), label_size = axtitle)
+
+fig5 <- ggdraw() +
+  draw_plot(fig5) +
+  draw_plot(SV.rdm, x = 0.06, y = 0.5, width = 0.20, height = 0.20, hjust = 0.5, vjust = 0.5) +
+  draw_plot(self.other.RSA.brain, x = 0.24, y = 0.5, width = 0.5, height = 0.5, hjust = 0.58, vjust = 0.5) +
+  draw_plot(self.other.univ.brain, x = 0.66, y = 0.5, width = 0.5, height = 0.55, hjust = 0.5, vjust = 0.5) +
+  # draw_plot(dACC.AI.SV.RSA.brain, x = 0.08, y = 0.22, width = 0.25, height = 0.25, hjust = 0.5, vjust = 0.5) +
+  # draw_plot(dACC.AI.SV.univ.brain, x = 0.60, y = 0.22, width = 0.25, height = 0.25, hjust = 0.5, vjust = 0.5) +
   draw_line(x = c(0.5, 0.5), y = c(0.05, 0.95), color = "black", size = 0.5)
 
-fig4labels <- plot_grid(f4top.title, f4bottom.title, nrow = 2)
+# fig5 <- plot_grid(f5top.title, fig5, ncol = 2, rel_widths = c(0.06,1))
 
-fig4titles <- plot_grid(f4left.title, f4right.title, ncol = 2)
+fig5 <- plot_grid(fig5titles, fig5, nrow=2, rel_heights = c(0.06,0.5))
 
-fig4 <- plot_grid(fig4labels, fig4, ncol = 2, rel_widths = c(0.06,1))
+if (saveplots == 1) {tiff("figures/Figure5.tiff", units="in", width = corrplotW*1.85, height = plotH*1.4, res = resolution)}
 
-if (saveplots == 1) {tiff("figures/Figure4.tiff", units="in", width = corrplotW*1.85, height = plotH*2.6, res = resolution)}
-
-fig4
+fig5
 
 if (saveplots == 1) {dev.off()}
 
 ```
+**Figure 5. Self-benefitting and domain general representations and tracking of subjective value.**
 
-**Figure 4. Self-benefitting and domain general representations and
-tracking of subjective value. (A)** A cluster putatively in the ventral
-tegmental area (VTA) encoded representational patterns of subjective value
-exclusively on self-benefitting trials (x=4, y =-22, z=16, k=291,
-Z=4.45, *p*=0.033 FWE-whole brain corrected after thresholding at
-*p*\<0.001, Figure 4a, Table S4). **(B)** A sub-region of the ventral
-anterior insula (vAI; x=-44 y=10 z=-10, Z=3.72, k=59, *p*\<0.05
-FWE-small volume) tracked subjective value of the chosen offer
-trial-by-trial more strongly for self-benefitting than other-benefitting
-choices. **(C)** The dACC/dmPFC and AI showed significant correlations
-between the brain-RDM and subjective value RDM pattern for both other
-and self offers, consistent with a domain general response in these
-regions (dACC/dmPFC: `r "\u03C4"`<sub>A</sub> = 0.064 ± 0.017,
-*p*\<0.001; AI: `r "\u03C4"`<sub>A</sub> = 0.047 ± 0.012, *p*\<0.001).
-**(D)** Univariate analysis also showed trial-by-trial tracking of
-subjective value in dACC/dmPFC and AI for both self and other (x=8 y=26 
-z=34, Z=4.75, k=1033, *p*\<0.05 FWE-whole brain) and bilateral
-anterior insula (left: x=-28 y=22 z=6, Z=4.47, k=306, *p*\<0.001
-FWE-SVC; right: x=34, y=24, z=2, Z=4.38, k=222, *p*\<0.05 FWE-small
-volume). \**p*\<0.05, \*\**p*\<0.01 \*\*\**p*\<0.001.
+## Figure 6
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE, fig.height=plotH*1.4, fig.width=corrplotW*1.75}
+
+f6left.title <- ggdraw() + 
+  draw_label(
+    "Multivariate subjective value pattern for Other ^ Self",
+    x = 0.5, hjust = 0.5, size = 18, fontface = "bold") +
+  theme(plot.background = element_rect(fill = NA, colour = NA))
+
+f6right.title <- ggdraw() + 
+  draw_label(
+    "Univariate subjective value tracking for Other ^ Self",
+    x = 0.5, hjust = 0.5, size = 18, fontface = "bold") +
+  theme(plot.background = element_rect(fill = NA, colour = NA))
+
+fig6titles <- plot_grid(f6left.title, f6right.title, ncol = 2)
+
+fig6 <- plot_grid(NULL, plot.SV.dACC, plot.SV.AI, NULL, NULL, plot.dacc_dmpfc_svc_conj, plot.AI_conj_SVC, 
+                  ncol = 7, nrow = 1, axis = "tblr", align = "hv", rel_widths = c(1,1,1,0.25,1,1,1),
+                  labels = c("A", "", "", "", "B", "", ""), label_size = axtitle)
+
+fig6 <- ggdraw() +
+  draw_plot(fig6) +
+  draw_plot(dACC.AI.SV.RSA.brain, x = 0.08, y = 0.5, width = 0.5, height = 0.5, hjust = 0.5, vjust = 0.5) +
+  draw_plot(dACC.AI.SV.univ.brain, x = 0.60, y = 0.5, width = 0.5, height = 0.5, hjust = 0.5, vjust = 0.5) +
+  draw_line(x = c(0.5, 0.5), y = c(0.05, 0.95), color = "black", size = 0.5)
+
+# fig6 <- plot_grid(f6bottom.title, fig6, ncol = 2, rel_widths = c(0.06,1))
+
+fig6 <- plot_grid(fig6titles, fig6, nrow=2, rel_heights = c(0.06,0.5))
+
+if (saveplots == 1) {tiff("figures/Figure6.tiff", units="in", width = corrplotW*1.85, height = plotH*1.4, res = resolution)}
+
+fig6
+
+if (saveplots == 1) {dev.off()}
+```
+
+**Figure 6. Multivariate and univariate patterns and signals of subjective value overlap in dACC/dmPFC and AI.**
 
 # Supplementary
 
@@ -1789,7 +2306,7 @@ rdm.eff <- ggplot(data = d.rdm.eff, aes(x=xcondition, y=ycondition, fill=value))
 
 # rdm.eff
 
-if (saveplots == 1) {dev.off()}
+# if (saveplots == 1) {dev.off()}
 
 rdm.eff.s <- rdm.eff + 
   ggtitle("Self effort")
@@ -1891,7 +2408,7 @@ rdm.rew.o <- rdm.rew +
 
 ```
 
-## Figure S2
+## Figure S1
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE, fig.height=corrplotW*2, fig.width=corrplotW*1.5}
 
@@ -1915,7 +2432,7 @@ rdm.fig <- plot_grid(rdm.eff.o + theme(legend.position = "none"),
                      nrow = 3, ncol = 3, rel_widths = c(1,1,0.3), 
                      label_size = axtitle, labels = c("A", "", "", "B", "", "", "C", "", ""), axis = "l", align = "hv")
 
-if (saveplots == 1) {tiff("figures/FigureS2.tiff", units="in", width = corrplotW*1.5, height = corrplotW*2, res = resolution)}
+if (saveplots == 1) {tiff("figures/FigureS1.tiff", units="in", width = corrplotW*1.5, height = corrplotW*2, res = resolution)}
 
 rdm.fig
 
@@ -1924,38 +2441,170 @@ if (saveplots == 1) {dev.off()}
 
 ```
 
-**Figure S2. RDMs for effort, subjective value and reward** 
-Six 25 x 25 (5 effort and 5 reward levels) model representational dissimilarity matrices (RDMs) were constructed at the offer stage to analyse activity during effort-based decisions separately for the self and other conditions. These coded for different task features in multivariate space. **(A)** For the effort model RDMs, this was the Euclidean distance between effort levels on offer. **(B)** For the subjective value RDMs, this was the Euclidean distance between subjective values of offers based on the winning computational model with separate discount parameters (`r "<i>\u039A</i>"`) for self and other trials. Each participant’s individual `r "<i>\u039A</i>"` parameter was used. **(C)** For the reward RDMs this was the Euclidean distance between reward levels on offer. Yellow colours show conditions are more dissimilar whereas dark blue colours show conditions are more similar in terms of the Euclidean distance between conditions. 
+**Figure S1. Model RDMs for effort, subjective value and reward. Related to Figure 1.**
 
-### Figure S4
+### Figure S2
 
-```{r, warning=FALSE, message=FALSE, echo=FALSE, fig.width=corrplotW*2, fig.height=plotH*1.25}
+```{r, warning=FALSE, message=FALSE, echo=FALSE, fig.width=corrplotW*1, fig.height=plotH}
 
-if (saveplots == 1) {tiff("figures/FigureS4.tiff", units="in", res = resolution, width = corrplotW*2, height = plotH*1.25)}
+if (saveplots == 1) {tiff("figures/FigureS2.tiff", units="in", res = resolution, width = corrplotW, height = plotH)}
 
-mi.plot <- plot_grid(bm.plot, bicp.plot, ncol = 2, align = "tb", axis = "lrtb", labels = "AUTO")
+plot.force.corrs <- plot_grid(plot.accg.rsa.for, plot.accg.for.choice, nrow = 1, label_size = axtitle, labels = c("D", "E"), axis = "l", align = "hv")
 
-mi.plot
+plot.force.corrs
 
 if (saveplots == 1) {dev.off()}
 
 ```
 
-**Figure S4. Model identifiability.** Data simulated from each of the 12 models for 100 participants shows that the model comparison procedure identifies the model that simulated the data, demonstrated by the strong diagonal. **(A)** We repeated the simulations and fittings ten times and quantified the winning model as with the modelling of participants’ data as the model with the lowest Bayesian Information Criterion (BIC), summing the number of times that model won across the ten runs. **(B)** We also calculated the percentage of simulated participants for which each model had the best fit to the data and averaged this over the ten runs.
+### Figure S3
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE, fig.height=plotH*1.5, fig.width=corrplotW*2}
+
+plot.rel.bic.rs <- ggdraw(plot.rel.bic.rs) +
+  draw_plot(plot.prop.bic10, x = 0.44, y=0.8, hjust = 0.5, vjust = 0.5, width = 0.5, height = 0.5) +
+  draw_line(x = c(0.44, 0.44), y = c(0.45, 0.57), color = "#7031A0", size = 2, alpha = 0.8) +
+  draw_plot(plot.prop.bic19, x = 0.78, y=0.8, hjust = 0.5, vjust = 0.5, width = 0.5, height = 0.5) +
+  draw_line(x = c(0.78, 0.78), y = c(0.45, 0.57), color = "#a0319a", size = 2, alpha = 0.8) +
+  draw_plot(plot.prop.bic22, x = 0.895, y=0.8, hjust = 0.5, vjust = 0.5, width = 0.5, height = 0.5) +
+  draw_line(x = c(0.895, 0.895), y = c(0.45, 0.57), color = "#a03161", size = 2, alpha = 0.8) 
+
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE, fig.width=corrplotW*2, fig.height=plotH*5}
+
+mi.rs.plot <- plot_grid(bm.rs.plot, 
+                        bicp.rs.plot, 
+                        ncol = 2, align = "tb", axis = "lrtb", labels = "AUTO")
+
+plot.rel.bic.rs <- plot_grid(plot.rel.bic.rs, NA, ncol = 2, rel_widths = c(1,0.1))
+
+plot.rel.bic.rs2 <- plot_grid(plot.rel.bic.rs2, NA, ncol = 2, rel_widths = c(1,0.1))
+
+plot.rel.bic.rs2.leg <- ggdraw(plot.rel.bic.rs2) +
+  draw_plot(leg.rel.bic.rs, x = 0.3, y = 0.05)
+
+bic.rs.mi.plot <- plot_grid(mi.rs.plot, plot.rel.bic.rs, plot.rel.bic.rs2.leg, plot.rel.bic.3, plot.rel.bic.10, nrow = 5, labels = c("", "C", "", "D", "E"))
+
+if (saveplots == 1) {tiff("figures/FigureS3.tiff", units="in", width = corrplotW*2, height = plotH*5, res = resolution)}
+
+bic.rs.mi.plot
+
+if (saveplots == 1) {dev.off()}
+
+```
+**Figure S3. Model identifiability and model comparison with all models and different Κ bounds. Related to Figure 2. ** 
+
+### Figure S5
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE, fig.width=corrplotW*2, fig.height=plotH*1.25}
+
+d.rsa <- d %>% pivot_longer(cols = ends_with(c('eff_RSA','rew_RSA', 'sV_RSA')), 
+                            names_to = c('Area', 'Measure'),
+                            names_sep = '_') %>% 
+  mutate(Measure = factor(Measure, levels = c('eff', 'rew', 'sV'), 
+                          labels = c('Effort', 'Reward', 'SV')))
+
+stars <- p.kend %>% 
+  mutate(Measure = factor(Measure, levels = c('eff', 'rew', 'sV'), labels = c('Effort', 'Reward', 'SV'))) %>% 
+  mutate(Recipient = factor(Recipient)) %>% 
+  mutate(label = "") %>% 
+  mutate(value = 0.15)
+
+stars$label[stars$pvalFDR < 0.05] <- "*"
+stars$label[stars$pvalFDR < 0.01] <- "**"
+stars$label[stars$pvalFDR < 0.001] <- "***"
+
+toplot <- c("vmPFC", "VS")
+toplottitles <- c("vmPFC", "Ventral striatum")
+
+for (p in 1:length(toplot)){
+  
+  area <- toplot[p]
+  
+  d.rsa.plot <- d.rsa %>% filter(Area == area) %>% droplevels()
+  
+  if (saveplots == 1) {tiff(paste0('plotpanels/RSA_',area,'.tiff'), units="in", width = plotW, height = plotH, res = resolution)}
+  
+  plot.rsa <- ggplot(d.rsa.plot, aes(x = Measure, y = value, fill = Recipient, color = Recipient)) + 
+    stat_summary(fun = mean, size = 0.5, geom = 'bar', alpha = 0.8, colour = 'black',
+                 position=position_dodge(0.5), width = 0.5) +
+    geom_point(position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.5),
+               size = 2, alpha = 0.8, show.legend = FALSE) +
+    stat_summary(fun = mean, size = 0.5, geom = 'bar', alpha = 0, colour = 'black',
+                 position=position_dodge(0.5), width = 0.5) +
+    stat_summary(fun.data = mean_se, geom = 'errorbar', colour = 'black', width = 0, position=position_dodge(0.5)) + 
+    scale_y_continuous(name = taulabel, limits = c(-0.14,0.22)) +
+    scale_x_discrete(name = '') +
+    scale_fill_manual(values = otherselfcols) +
+    scale_color_manual(values = otherselfdots) +
+    ggtitle(toplottitles[p]) +
+    facet_wrap(facets = vars(fct_rev(Recipient))) +
+    theme_classic() + 
+    theme(legend.position = 'none',
+          axis.text.y=element_text(size = axtext),
+          axis.text.x=element_text(size = axtext),
+          axis.title.y=element_markdown(size = axtitle),
+          strip.text = element_text(size = axtext),
+          plot.title = element_text(size = axtitle, hjust = 0.5), 
+          plot.background = element_rect(fill = NA, colour = NA)) 
+  
+  stars.plot <- stars %>% filter(Area == area) %>% droplevels()
+  
+  plot.rsa <- plot.rsa +
+    geom_text(data = stars.plot, label = stars.plot$label, 
+              position = position_dodge(0.5), 
+              colour = 'black', size = 5) 
+  
+  # print(plot.rsa)
+  
+  plot.name <- paste0("plot.", area)
+  
+  assign(plot.name, plot.rsa)
+  
+}
+
+figSX <- plot_grid(plot.vmPFC, plot.VS, ncol = 2, labels = "AUTO", label_size = axtitle)
+
+if (saveplots == 1) {tiff("figures/FigureSX.tiff", units="in", width = corrplotW*1.5, height = corrplotW*0.5, res = resolution)}
+
+figSX
+
+if (saveplots == 1) {dev.off()}
+
+```
+
+**Figure S5. vmPFC and VS multivariate patterns of effort, reward and subjective value. Related to Table S6.**
+
+### Table 1
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+
+self.other.mean.se.diff.f <- self.other.mean.se.diff %>% 
+  mutate(p = pvalr(p)) %>% 
+  mutate(p = str_replace(p, pattern = "=", replacement = ""))
+
+kable(self.other.mean.se.diff.f,
+      align = c(rep('l',1),rep('c',ncol(self.other.mean.se.diff.f)-1)),
+      caption = paste0("Summary statistics and Wilcoxon comparisons between self and other for behavioural variables")) %>% kable_styling()
+
+if (savecsvs == 1) {write.table(self.other.mean.se.diff.f, file = "output/Table_1.csv", sep = ",", row.names = F)}
+
+```
 
 ### Table S1
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE}
 
-r.choice$p[!is.na(r.choice$p)] <- pvalr(r.choice$p[!is.na(r.choice$p)])
-r.choice <- r.choice %>% 
+r.choice.rs$p[!is.na(r.choice.rs$p)] <- pvalr(r.choice.rs$p[!is.na(r.choice.rs$p)])
+r.choice.rs <- r.choice.rs %>% 
   mutate(p = str_replace(p, pattern = "=", replacement = ""))
 
-kable(r.choice,
-      align = c('l',rep('c',(ncol(r.choice)-1))),
+kable(r.choice.rs,
+      align = c('l',rep('c',(ncol(r.choice.rs)-1))),
       caption = "Generalised linear mixed-effects model predicting choices") %>% kable_styling()
 
-if (savecsvs == 1) {write.table(r.choice, file = "output/Table_S1.csv", sep = ",", row.names = F)}
+if (savecsvs == 1) {write.table(r.choice.rs, file = "output/Table_S1.csv", sep = ",", row.names = F)}
 
 ```
 
@@ -1963,23 +2612,23 @@ if (savecsvs == 1) {write.table(r.choice, file = "output/Table_S1.csv", sep = ",
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE}
 
-r.force$p[!is.na(r.force$p)] <- pvalr(r.force$p[!is.na(r.force$p)])
-r.force <- r.force %>% 
+r.force.rs$p[!is.na(r.force.rs$p)] <- pvalr(r.force.rs$p[!is.na(r.force.rs$p)])
+r.force.rs <- r.force.rs %>% 
   mutate(p = str_replace(p, pattern = "=", replacement = ""))
 
-kable(r.force,
-      align = c('l',rep('c',(ncol(r.force)-1))),
+kable(r.force.rs,
+      align = c('l',rep('c',(ncol(r.force.rs)-1))),
       caption = "Linear mixed-effects model predicting normalised force") %>% kable_styling()
 
-if (savecsvs == 1) {write.table(r.force, file = "output/Table_S2.csv", sep = ",", row.names = F)}
+if (savecsvs == 1) {write.table(r.force.rs, file = "output/Table_S2.csv", sep = ",", row.names = F)}
 
 ```
-
 ### Table S3
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE}
 
 p.kend.f <- p.kend %>% 
+  subset(Area == c("vmPFC", "VS")) %>% 
   mutate(Measure = factor(Measure, levels = c('eff', 'rew', 'sV'), 
                           labels = c('effort RDM', 'reward RDM', 'subjective value RDM'))) %>% 
   arrange(Measure, Recipient, Area) %>% 
@@ -1993,5 +2642,46 @@ kable(p.kend.f,
       caption = paste0(taulabel, " correlations between brain RDMs and model RDMs")) %>% kable_styling()
 
 if (savecsvs == 1) {write.table(p.kend.f, file = "output/Table_S3.csv", sep = ",", row.names = F)}
+
+```
+
+### Table S4
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+
+p.reweff.diff.f <- p.reweff.diff %>% 
+  mutate(Measure = factor(Measure, levels = c('self', 'other'), 
+                          labels = c('self RDM', 'other RDM'))) %>% 
+  arrange(Contrast, Measure, Area) %>% 
+  mutate(pval = pvalr(pval)) %>% 
+  mutate(pval = str_replace(pval, pattern = "=", replacement = "")) 
+
+kable(p.reweff.diff.f,
+      align = c(rep('l',3),rep('c',5)),
+      caption = paste0("Contrasts between RDMs")) %>% kable_styling()
+
+if (savecsvs == 1) {write.table(p.reweff.diff.f, file = "output/Table_S4.csv", sep = ",", row.names = F)}
+
+```
+
+### Table S5
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+
+p.kend.f <- p.kend %>% 
+  subset(Area != c("vmPFC", "VS")) %>% 
+  mutate(Measure = factor(Measure, levels = c('eff', 'rew', 'sV'), 
+                          labels = c('effort RDM', 'reward RDM', 'subjective value RDM'))) %>% 
+  arrange(Measure, Recipient, Area) %>% 
+  mutate(pval = pvalr(pval)) %>% 
+  mutate(pval = str_replace(pval, pattern = "=", replacement = "")) %>% 
+  mutate(pvalFDR = pvalr(pvalFDR)) %>% 
+  mutate(pvalFDR = str_replace(pvalFDR, pattern = "=", replacement = ""))
+
+kable(p.kend.f,
+      align = c(rep('l',3),rep('c',4)),
+      caption = paste0(taulabel, " correlations between brain RDMs and model RDMs")) %>% kable_styling()
+
+if (savecsvs == 1) {write.table(p.kend.f, file = "output/Table_S5.csv", sep = ",", row.names = F)}
 
 ```
